@@ -574,10 +574,12 @@ impl PrettyPrint for Inst {
                 tmp,
                 frame_size,
                 guard_size,
+                keep_sp,
             } => {
                 let tmp = pretty_print_reg(tmp.to_reg(), 8);
                 let op = ljustify("stack_probe_loop".to_string());
-                format!("{op} {tmp}, frame_size={frame_size}, guard_size={guard_size}")
+                let keep_sp = if *keep_sp { ", keep_sp" } else { "" };
+                format!("{op} {tmp}, frame_size={frame_size}, guard_size={guard_size}{keep_sp}")
             }
 
             Inst::CallKnown { info } => {

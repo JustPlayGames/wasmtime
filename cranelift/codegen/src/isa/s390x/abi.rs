@@ -645,6 +645,7 @@ impl ABIMachineSpec for S390xMachineDeps {
         _call_conv: isa::CallConv,
         frame_size: u32,
         guard_size: u32,
+        _windows: bool,
     ) {
         // The stack probe loop currently takes 4 instructions and each unrolled
         // probe takes 2.  Set this to 2 to keep the max size to 4 instructions.

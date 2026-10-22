@@ -544,11 +544,20 @@ pub trait ABIMachineSpec {
     fn gen_probestack(insts: &mut SmallInstVec<Self::I>, frame_size: u32);
 
     /// Generate a inline stack probe.
+    ///
+    /// `windows` is set when compiling for a Windows target. Windows grows a
+    /// thread's stack through a single guard page, so every page of the frame
+    /// must be touched in order, from the top down; and the Windows unwinder
+    /// only knows the stack pointer adjustments that the prologue's unwind
+    /// codes describe, so the probes must leave the stack pointer alone (as
+    /// MSVC's `__chkstk` does) for a fault in them, such as a stack overflow,
+    /// to unwind correctly.
     fn gen_inline_probestack(
         insts: &mut SmallInstVec<Self::I>,
         call_conv: isa::CallConv,
         frame_size: u32,
         guard_size: u32,
+        windows: bool,
     );
 
     /// Generate a clobber-save sequence. The implementation here should return
@@ -1200,6 +1209,9 @@ pub struct Callee<M: ABIMachineSpec> {
     /// registers and keep nothing live after this sequence of instructions.
     stack_limit: Option<(Reg, SmallInstVec<M::I>)>,
 
+    /// Whether the target is Windows (see `gen_inline_probestack`).
+    windows: bool,
+
     _mach: PhantomData<M>,
 }
 
@@ -1372,6 +1384,7 @@ impl<M: ABIMachineSpec> Callee<M> {
             flags,
             isa_flags: isa_flags.clone(),
             stack_limit,
+            windows: isa.triple().operating_system == target_lexicon::OperatingSystem::Windows,
             _mach: PhantomData,
         })
     }
@@ -2385,6 +2398,7 @@ impl<M: ABIMachineSpec> Callee<M> {
                         self.call_conv,
                         total_stacksize,
                         guard_size,
+                        self.windows,
                     ),
                     ProbestackStrategy::Outline => {
                         if total_stacksize >= guard_size {

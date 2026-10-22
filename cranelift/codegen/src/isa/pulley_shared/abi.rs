@@ -555,6 +555,7 @@ where
         _call_conv: isa::CallConv,
         _frame_size: u32,
         _guard_size: u32,
+        _windows: bool,
     ) {
         // Pulley doesn't need inline probestacks because it always checks stack
         // decrements.

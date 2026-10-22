@@ -1,0 +1,153 @@
+; On Windows the inline stack probes touch each page below RSP without moving
+; RSP (as MSVC's `__chkstk` does): the prologue's Windows unwind codes don't
+; describe any stack allocation until after the probes, so a fault in a probe
+; (a stack overflow) must unwind with RSP where the codes say it is.
+test compile precise-output
+set enable_probestack=true
+set probestack_strategy=inline
+set probestack_size_log2=12
+target x86_64-pc-windows-msvc
+
+; One page or less: no probe.
+function %single_page() -> i64 windows_fastcall {
+ss0 = explicit_slot 2048
+
+block0:
+  v1 = stack_addr.i64 ss0
+  return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x800, %rsp
+; block0:
+;   leaq <offset:1>+(%rsp), %rax
+;   addq $0x800, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   subq $0x800, %rsp
+; block1: ; offset 0xb
+;   leaq (%rsp), %rax
+;   addq $0x800, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %unrolled() -> i64 windows_fastcall {
+ss0 = explicit_slot 12288
+
+block0:
+  v1 = stack_addr.i64 ss0
+  return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   movl $0x0, -0x1000(%rsp)
+;   movl $0x0, -0x2000(%rsp)
+;   movl $0x0, -0x3000(%rsp)
+;   subq $0x3000, %rsp
+; block0:
+;   leaq <offset:1>+(%rsp), %rax
+;   addq $0x3000, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   movl $0, -0x1000(%rsp)
+;   movl $0, -0x2000(%rsp)
+;   movl $0, -0x3000(%rsp)
+;   subq $0x3000, %rsp
+; block1: ; offset 0x2c
+;   leaq (%rsp), %rax
+;   addq $0x3000, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %large() -> i64 windows_fastcall {
+ss0 = explicit_slot 100000
+
+block0:
+  v1 = stack_addr.i64 ss0
+  return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   stack_probe_loop %r11, frame_size=100000, guard_size=4096, keep_sp
+;   subq $0x186a0, %rsp
+; block0:
+;   leaq <offset:1>+(%rsp), %rax
+;   addq $0x186a0, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   movq $18446744073709547520, %r11
+;   movl $0, (%rsp, %r11)
+;   subq $0x1000, %r11
+;   cmpq $-0x19000, %r11
+;   jge 0xb
+;   subq $0x186a0, %rsp
+; block1: ; offset 0x2e
+;   leaq (%rsp), %rax
+;   addq $0x186a0, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+
+function %large_sysv() -> i64 system_v {
+ss0 = explicit_slot 100000
+
+block0:
+  v1 = stack_addr.i64 ss0
+  return v1
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   stack_probe_loop %r11, frame_size=100000, guard_size=4096, keep_sp
+;   subq $0x186a0, %rsp
+; block0:
+;   leaq <offset:1>+(%rsp), %rax
+;   addq $0x186a0, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+;   movq $18446744073709547520, %r11
+;   movl $0, (%rsp, %r11)
+;   subq $0x1000, %r11
+;   cmpq $-0x19000, %r11
+;   jge 0xb
+;   subq $0x186a0, %rsp
+; block1: ; offset 0x2e
+;   leaq (%rsp), %rax
+;   addq $0x186a0, %rsp
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+

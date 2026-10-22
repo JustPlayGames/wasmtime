@@ -331,6 +331,7 @@ pub(crate) fn emit(
             tmp,
             frame_size,
             guard_size,
+            keep_sp,
         } => {
             assert!(info.flags.enable_probestack());
             assert!(guard_size.is_power_of_two());
@@ -339,6 +340,57 @@ pub(crate) fn emit(
 
             // Number of probes that we need to perform
             let probe_count = align_to(*frame_size, *guard_size) / guard_size;
+
+            if *keep_sp {
+                // Touch every page of the frame from the top down, as
+                // MSVC's `__chkstk` does, with `tmp` as the (negative) offset
+                // from RSP of the page being touched; RSP itself does not
+                // move, so the Windows unwinder, which only knows the
+                // prologue's unwind codes, unwinds correctly from a fault in
+                // here.
+                //
+                // Generate the following code:
+                //         mov  tmp_reg, -guard_size
+                // .loop_start:
+                //         mov  [rsp + tmp_reg], 0
+                //         sub  tmp_reg, guard_size
+                //         cmp  tmp_reg, -(guard_size * probe_count)
+                //         jge  .loop_start
+                let guard_size_ = i32::try_from(*guard_size)
+                    .expect("`guard_size` is too large to fit in a 32-bit immediate");
+                let guard_plus_count = i32::try_from(guard_size * probe_count)
+                    .expect("`guard_size * probe_count` is too large to fit in a 32-bit immediate");
+
+                // mov  tmp_reg, -guard_size
+                Inst::imm(
+                    OperandSize::Size64,
+                    i64::from(guard_size_.wrapping_neg()).cast_unsigned(),
+                    tmp,
+                )
+                .emit(sink, info, state);
+
+                let loop_start = sink.get_label();
+                sink.bind_label(loop_start, state.ctrl_plane_mut());
+
+                // mov  [rsp + tmp_reg], 0
+                let tmp_gpr = Gpr::unwrap_new(tmp.to_reg());
+                asm::inst::movl_mi::new(
+                    Amode::imm_reg_reg_shift(0, Gpr::RSP, tmp_gpr, 0),
+                    0i32.cast_unsigned(),
+                )
+                .emit(sink, info, state);
+
+                // sub  tmp_reg, guard_size
+                Inst::subq_mi(tmp, guard_size_).emit(sink, info, state);
+
+                // cmp  tmp_reg, -(guard_size * probe_count)
+                asm::inst::cmpq_mi::new(tmp_gpr, guard_plus_count.wrapping_neg())
+                    .emit(sink, info, state);
+
+                // jge  .loop_start
+                one_way_jmp(sink, CC::NL, loop_start);
+                return;
+            }
 
             // The inline stack probe loop has 3 phases:
             //

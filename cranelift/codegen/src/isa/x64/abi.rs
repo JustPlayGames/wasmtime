@@ -24,7 +24,31 @@ pub(crate) type X64Callee = Callee<X64ABIMachineSpec>;
 pub struct X64ABIMachineSpec;
 
 impl X64ABIMachineSpec {
-    fn gen_probestack_unroll(insts: &mut SmallInstVec<Inst>, guard_size: u32, probe_count: u32) {
+    fn gen_probestack_unroll(
+        insts: &mut SmallInstVec<Inst>,
+        guard_size: u32,
+        probe_count: u32,
+        keep_sp: bool,
+    ) {
+        if keep_sp {
+            // Touch each page below RSP in order, from the top down, without
+            // moving RSP (see `Inst::StackProbeLoop`):
+            // mov  [rsp - guard_size * n], 0
+            insts.reserve(probe_count as usize);
+            for n in 1..=probe_count {
+                let offset = i32::try_from(guard_size * n)
+                    .expect("`guard_size * probe_count` is too large to fit in a 32-bit immediate");
+                insts.push(Inst::External {
+                    inst: asm::inst::movl_mi::new(
+                        Amode::imm_reg(offset.wrapping_neg(), regs::rsp()),
+                        0i32.cast_unsigned(),
+                    )
+                    .into(),
+                });
+            }
+            return;
+        }
+
         insts.reserve(probe_count as usize);
         for _ in 0..probe_count {
             // "Allocate" stack space for the probe by decrementing the stack pointer before
@@ -49,6 +73,7 @@ impl X64ABIMachineSpec {
         _call_conv: isa::CallConv,
         frame_size: u32,
         guard_size: u32,
+        keep_sp: bool,
     ) {
         // We have to use a caller-saved register since clobbering only
         // happens after stack probing.
@@ -65,6 +90,7 @@ impl X64ABIMachineSpec {
             tmp: Writable::from_reg(tmp),
             frame_size,
             guard_size,
+            keep_sp,
         });
     }
 }
@@ -642,7 +668,14 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         call_conv: isa::CallConv,
         frame_size: u32,
         guard_size: u32,
+        windows: bool,
     ) {
+        // On Windows the probes run before the prologue's unwind codes
+        // describe any stack allocation, so they must not move RSP: a fault
+        // in them, which is how a stack overflow shows up, would otherwise
+        // unwind from the wrong return address. Elsewhere RSP moves before
+        // each store so that tools like valgrind don't see writes below it.
+        let keep_sp = windows;
         // Unroll at most n consecutive probes, before falling back to using a loop
         //
         // This was number was picked because the loop version is 38 bytes long. We can fit
@@ -659,9 +692,9 @@ impl ABIMachineSpec for X64ABIMachineSpec {
             // before any registers are saved, and a `preserve_all` function
             // must not clobber any register. The unrolled probes don't use
             // any registers, so always use them for `preserve_all`.
-            Self::gen_probestack_unroll(insts, guard_size, probe_count)
+            Self::gen_probestack_unroll(insts, guard_size, probe_count, keep_sp)
         } else {
-            Self::gen_probestack_loop(insts, call_conv, frame_size, guard_size)
+            Self::gen_probestack_loop(insts, call_conv, frame_size, guard_size, keep_sp)
         }
     }
 
