@@ -102,13 +102,17 @@ impl CallConv {
     }
 
     /// Does this calling convention support exceptions?
+    ///
+    /// `WindowsFastcall` supports them on x86-64 only, where the unwinder is
+    /// the Windows one (`RtlUnwindEx`) and the payload arrives in `rax`.
     pub fn supports_exceptions(&self) -> bool {
         match self {
             CallConv::Tail
             | CallConv::SystemV
             | CallConv::Winch
             | CallConv::PreserveAll
-            | CallConv::AppleAarch64 => true,
+            | CallConv::AppleAarch64
+            | CallConv::WindowsFastcall => true,
             _ => false,
         }
     }
@@ -126,13 +130,15 @@ impl CallConv {
     /// destinations as this return value.
     pub fn exception_payload_types(&self, pointer_ty: Type) -> &[Type] {
         match self {
-            CallConv::Tail | CallConv::SystemV | CallConv::PreserveAll | CallConv::AppleAarch64 => {
-                match pointer_ty {
-                    types::I32 => &[types::I32, types::I32],
-                    types::I64 => &[types::I64, types::I64],
-                    _ => unreachable!(),
-                }
-            }
+            CallConv::Tail
+            | CallConv::SystemV
+            | CallConv::PreserveAll
+            | CallConv::AppleAarch64
+            | CallConv::WindowsFastcall => match pointer_ty {
+                types::I32 => &[types::I32, types::I32],
+                types::I64 => &[types::I64, types::I64],
+                _ => unreachable!(),
+            },
             _ => &[],
         }
     }

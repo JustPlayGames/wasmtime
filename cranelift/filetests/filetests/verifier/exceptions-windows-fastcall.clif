@@ -1,0 +1,19 @@
+test verifier
+target aarch64
+
+;; `windows_fastcall` supports exceptions only on x86-64 (the Windows
+;; unwinder delivers the payload in `rax`).
+
+function %f0(i64) -> i64 {
+    sig0 = (i64) windows_fastcall
+    fn0 = %g(i64) windows_fastcall
+
+    block0(v0: i64):
+        try_call fn0(v0), sig0, block1(), [ default: block2(exn0) ] ; error: supports exceptions only on x86-64
+
+    block1:
+        return v0
+
+    block2(v1: i64):
+        return v1
+}

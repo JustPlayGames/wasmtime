@@ -915,7 +915,11 @@ impl ABIMachineSpec for X64ABIMachineSpec {
             (isa::CallConv::PreserveAll, true) => ALL_CLOBBERS,
             (isa::CallConv::Winch, _) => ALL_CLOBBERS,
             (isa::CallConv::SystemV, _) => SYSV_CLOBBERS,
-            (isa::CallConv::WindowsFastcall, false) => WINDOWS_CLOBBERS,
+            // The Windows unwinder (`RtlUnwindEx`) restores all non-volatile
+            // registers recorded in the UNWIND_INFO of each frame it unwinds,
+            // so the exceptional edge clobbers the same registers as a
+            // normal return.
+            (isa::CallConv::WindowsFastcall, _) => WINDOWS_CLOBBERS,
             (isa::CallConv::PreserveAll, _) => NO_CLOBBERS,
             (_, false) => SYSV_CLOBBERS,
             (call_conv, true) => panic!("unimplemented clobbers for exn abi of {call_conv:?}"),
@@ -998,9 +1002,10 @@ impl ABIMachineSpec for X64ABIMachineSpec {
     fn exception_payload_regs(call_conv: isa::CallConv) -> &'static [Reg] {
         const PAYLOAD_REGS: &'static [Reg] = &[regs::rax(), regs::rdx()];
         match call_conv {
-            isa::CallConv::SystemV | isa::CallConv::Tail | isa::CallConv::PreserveAll => {
-                PAYLOAD_REGS
-            }
+            isa::CallConv::SystemV
+            | isa::CallConv::Tail
+            | isa::CallConv::PreserveAll
+            | isa::CallConv::WindowsFastcall => PAYLOAD_REGS,
             _ => &[],
         }
     }

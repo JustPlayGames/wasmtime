@@ -953,6 +953,18 @@ impl<'a> Verifier<'a> {
                     "calling convention `{callee_call_conv}` of callee does not support exceptions"
                 ),
             ))?;
+        } else if callee_call_conv == CallConv::WindowsFastcall
+            && self.isa.is_some_and(|isa| {
+                isa.triple().architecture != target_lexicon::Architecture::X86_64
+            })
+        {
+            errors.nonfatal((
+                inst,
+                self.context(inst),
+                format!(
+                    "calling convention `{callee_call_conv}` of callee supports exceptions only on x86-64"
+                ),
+            ))?;
         }
         Ok(())
     }
