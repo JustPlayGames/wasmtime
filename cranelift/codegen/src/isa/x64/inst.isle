@@ -53,9 +53,13 @@
        ;; Stack manipulation.
 
       ;; Emits an inline stack probe loop.
+      ;; With `keep_sp`, the probes are stored below RSP, which does not
+      ;; move (as MSVC's `__chkstk` does): the Windows unwinder can't
+      ;; describe the moves of the other form.
       (StackProbeLoop (tmp WritableReg)
                       (frame_size u32)
-                      (guard_size u32))
+                      (guard_size u32)
+                      (keep_sp bool))
 
        ;; =========================================
        ;; Floating-point operations.

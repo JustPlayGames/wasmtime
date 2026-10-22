@@ -702,6 +702,7 @@ impl ABIMachineSpec for Riscv64MachineDeps {
         call_conv: isa::CallConv,
         frame_size: u32,
         guard_size: u32,
+        _windows: bool,
     ) {
         // Unroll at most n consecutive probes, before falling back to using a loop
         const PROBE_MAX_UNROLL: u32 = 3;

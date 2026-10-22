@@ -1,0 +1,30 @@
+; The Windows unwind info of a function with stack probes: the probes come
+; after `push rbp` (offset 1) and before the frame is described (the
+; SetFramePointer at the end of the probes), and they don't move RSP, so every
+; instruction in the prologue unwinds correctly.
+test unwind
+set unwind_info=true
+set enable_probestack=true
+set probestack_strategy=inline
+target x86_64-pc-windows-msvc
+
+function %large() -> i64 windows_fastcall {
+ss0 = explicit_slot 100000
+
+block0:
+  v1 = stack_addr.i64 ss0
+  return v1
+}
+
+; sameln:               version: 1
+; nextln:                 flags: 0
+; nextln:         prologue size: 39
+; nextln:        frame register: 5
+; nextln: frame register offset: 0
+; nextln:          unwind codes: 2
+; check:                offset: 1
+; nextln:                    op: PushNonvolatileRegister
+; nextln:                  info: 5
+; check:                offset: 39
+; nextln:                    op: SetFramePointer
+; nextln:                  info: 0

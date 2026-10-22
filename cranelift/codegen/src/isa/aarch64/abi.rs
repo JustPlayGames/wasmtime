@@ -756,6 +756,7 @@ impl ABIMachineSpec for AArch64MachineDeps {
         _call_conv: isa::CallConv,
         frame_size: u32,
         guard_size: u32,
+        _windows: bool,
     ) {
         // The stack probe loop currently takes 6 instructions and each inline
         // probe takes 2 (ish, these numbers sort of depend on the constants).
