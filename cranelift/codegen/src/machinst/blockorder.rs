@@ -64,7 +64,7 @@ use crate::dominator_tree::DominatorTree;
 use crate::entity::SecondaryMap;
 use crate::inst_predicates::visit_block_succs;
 use crate::ir::{Block, Function, Inst, Opcode};
-use crate::{FxHashMap, FxHashSet};
+use crate::FxHashSet;
 use crate::{machinst::*, trace};
 
 /// Mapping from CLIF BBs to VCode BBs.
@@ -153,14 +153,22 @@ impl BlockLoweringOrder {
         trace!("BlockLoweringOrder: function body {:?}", f);
 
         // Step 1: compute the in-edge and out-edge count of every block.
+        // Sized up front: assigning one entry past a map's end grows it by one entry.
+        let num_blocks = f.dfg.num_blocks();
         let mut block_in_count = SecondaryMap::with_default(0);
+        block_in_count.resize(num_blocks);
         let mut block_out_count = SecondaryMap::with_default(0);
+        block_out_count.resize(num_blocks);
 
         // Block successors are stored as `LoweredBlocks` to simplify the construction of
         // `lowered_succs` in the final result. Initially, all entries are `Orig` values, and are
         // updated to be `CriticalEdge` when those cases are identified in step 2 below.
         let mut block_succs: SmallVec<[LoweredBlock; 128]> = SmallVec::new();
         let mut block_succ_range = SecondaryMap::with_default(0..0);
+        block_succ_range.resize(num_blocks);
+        // The lowered index of each critical edge in `block_succs`, filled
+        // in when step 2 splits the edge.
+        let mut critical_edge_index: SmallVec<[BlockIndex; 128]> = SmallVec::new();
 
         let mut indirect_branch_target_clif_blocks = FxHashSet::default();
 
@@ -199,8 +207,10 @@ impl BlockLoweringOrder {
         // Step 2: walk the postorder from the domtree in reverse to produce our desired node
         // lowering order, identifying critical edges to split along the way.
 
+        critical_edge_index.resize(block_succs.len(), BlockIndex::invalid());
         let mut lowered_order = Vec::new();
         let mut blockindex_by_block = SecondaryMap::with_default(BlockIndex::invalid());
+        blockindex_by_block.resize(num_blocks);
         for &block in domtree.cfg_rpo() {
             let idx = BlockIndex::new(lowered_order.len());
             lowered_order.push(LoweredBlock::Orig { block });
@@ -208,6 +218,7 @@ impl BlockLoweringOrder {
 
             if block_out_count[block] > 1 {
                 let range = block_succ_range[block].clone();
+                let range_start = range.start;
 
                 // If chaos-mode is enabled in the control plane, iterate over
                 // the successors in an arbitrary order, which should have no
@@ -226,18 +237,21 @@ impl BlockLoweringOrder {
                             succ,
                             succ_idx: succ_ix as u32,
                         };
+                        critical_edge_index[range_start + succ_ix] =
+                            BlockIndex::new(lowered_order.len());
                         lowered_order.push(*lb);
                     }
                 }
             }
         }
 
-        let lb_to_bindex = FxHashMap::from_iter(
-            lowered_order
-                .iter()
-                .enumerate()
-                .map(|(i, &lb)| (lb, BlockIndex::new(i))),
-        );
+        // The lowered index of a successor: an original block's from
+        // `blockindex_by_block`, a split edge's from `critical_edge_index`.
+        // Each lowered block appears once in `lowered_order`.
+        let lb_to_bindex = |i: usize, lb: &LoweredBlock| match *lb {
+            LoweredBlock::Orig { block } => blockindex_by_block[block],
+            LoweredBlock::CriticalEdge { .. } => critical_edge_index[i],
+        };
 
         // Step 3: build the successor tables given the lowering order. We can't perform this step
         // during the creation of `lowering_order`, as we need `lb_to_bindex` to be fully populated
@@ -254,8 +268,12 @@ impl BlockLoweringOrder {
                     // determining the block order already.
                     &LoweredBlock::Orig { block } => {
                         let range = block_succ_range[block].clone();
-                        lowered_succ_indices
-                            .extend(block_succs[range].iter().map(|lb| lb_to_bindex[lb]));
+                        lowered_succ_indices.extend(
+                            block_succs[range.clone()]
+                                .iter()
+                                .zip(range)
+                                .map(|(lb, i)| lb_to_bindex(i, lb)),
+                        );
 
                         if f.is_effectively_cold(block) {
                             cold_blocks.insert(bindex);
@@ -276,7 +294,7 @@ impl BlockLoweringOrder {
                     // Critical edges won't have successor information in block_succ_range, but
                     // they only have a single known successor to record anyway.
                     &LoweredBlock::CriticalEdge { succ, .. } => {
-                        let succ_index = lb_to_bindex[&LoweredBlock::Orig { block: succ }];
+                        let succ_index = blockindex_by_block[succ];
                         lowered_succ_indices.push(succ_index);
 
                         // Edges inherit indirect branch and cold block metadata from their
