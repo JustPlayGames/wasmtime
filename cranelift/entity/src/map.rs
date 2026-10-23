@@ -207,7 +207,12 @@ where
     /// Slow path for `index_mut` which resizes the vector.
     #[cold]
     fn resize_for_index_mut(&mut self, i: usize) -> &mut V {
-        self.elems.resize(i + 1, self.default.clone());
+        if i == self.elems.len() {
+            // The common case when a map follows entities as they are created: one more entry.
+            self.elems.push(self.default.clone());
+        } else {
+            self.elems.resize(i + 1, self.default.clone());
+        }
         &mut self.elems[i]
     }
 }
