@@ -921,3 +921,84 @@ fn anonymous_data_symbol_on_request() {
     assert_eq!(product.data_symbol(second), symbol);
     product.emit().expect("emit object file");
 }
+
+#[test]
+fn coff_function_and_data_sections_are_comdats() {
+    use object::{Object as _, ObjectComdat as _, ObjectSection as _, ObjectSymbol as _};
+
+    let isa = cranelift_codegen::isa::lookup_by_name("x86_64-pc-windows-msvc")
+        .unwrap()
+        .finish(settings::Flags::new(settings::builder()))
+        .unwrap();
+    let mut builder = ObjectBuilder::new(isa, "test", default_libcall_names()).unwrap();
+    builder.per_function_section(true);
+    builder.per_data_object_section(true);
+    let mut module = ObjectModule::new(builder);
+
+    let constant = module.declare_anonymous_data(false, false).unwrap();
+    let mut data_desc = DataDescription::new();
+    data_desc.define(vec![7; 8].into_boxed_slice());
+    module.define_data(constant, &data_desc).unwrap();
+
+    let sig = Signature {
+        params: vec![],
+        returns: vec![AbiParam::new(types::I64)],
+        call_conv: module.target_config().default_call_conv,
+    };
+    let mut functions = vec![];
+    for name in ["first", "second"] {
+        let func_id = module
+            .declare_function(name, Linkage::Export, &sig)
+            .unwrap();
+        let mut ctx = Context::new();
+        ctx.func =
+            Function::with_name_signature(UserFuncName::user(0, func_id.as_u32()), sig.clone());
+        let mut func_ctx = FunctionBuilderContext::new();
+        {
+            let mut bcx = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
+            let block = bcx.create_block();
+            bcx.switch_to_block(block);
+            let gv = module.declare_data_in_func(constant, &mut bcx.func);
+            let address = bcx
+                .ins()
+                .symbol_value(module.target_config().pointer_type(), gv);
+            bcx.ins().return_(&[address]);
+            bcx.seal_all_blocks();
+            bcx.finalize(module.target_config());
+        }
+        module.define_function(func_id, &mut ctx).unwrap();
+        functions.push(func_id);
+    }
+
+    let mut product = module.finish();
+    let first_section = product
+        .object
+        .symbol(product.function_symbol(functions[0]))
+        .section
+        .id()
+        .unwrap();
+    assert!(product.section_comdat(first_section).is_some());
+    let bytes = product.emit().expect("emit object file");
+
+    let file = object::File::parse(&*bytes).expect("parse emitted object");
+    // One COMDAT per function and one for the constant, each with a section of its own.
+    let comdats: Vec<_> = file.comdats().collect();
+    assert_eq!(comdats.len(), 3);
+    for comdat in &comdats {
+        assert_eq!(comdat.kind(), object::ComdatKind::NoDuplicates);
+        assert_eq!(comdat.sections().count(), 1);
+    }
+    for name in ["first", "second"] {
+        let symbol = file.symbols().find(|s| s.name() == Ok(name)).unwrap();
+        assert!(symbol.is_global());
+        let section = file
+            .section_by_index(symbol.section_index().unwrap())
+            .unwrap();
+        assert_eq!(section.name(), Ok(".text"));
+        assert!(
+            comdats
+                .iter()
+                .any(|comdat| comdat.sections().any(|s| s == section.index()))
+        );
+    }
+}
