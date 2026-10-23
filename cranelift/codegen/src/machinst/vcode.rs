@@ -587,7 +587,39 @@ impl<I: VCodeInst> VCodeBuilder<I> {
             self.vcode.debug_value_labels.iter().map(|&(vreg, ..)| vreg),
         );
 
+        self.number_vregs_for_regalloc();
         self.vcode
+    }
+
+    /// Numbers the vregs that register allocation sees from zero.
+    ///
+    /// Our vreg numbers start after the pinned vregs that stand for physical registers
+    /// (`first_user_vreg_index`), which never reach register allocation: real registers are
+    /// passed as fixed constraints instead. The register allocator sizes and walks its per-vreg
+    /// data by `num_vregs`, so the pinned range cost it work in every function, most of the
+    /// work for a small one. Only what the allocator reads is renumbered: the instructions keep
+    /// their registers, and emission takes allocations by operand position. Every number moves
+    /// by the same amount, so their order, and with it every allocation, stays the same.
+    fn number_vregs_for_regalloc(&mut self) {
+        let first = first_user_vreg_index();
+        let renumber = |vreg: VReg| {
+            debug_assert!(vreg.vreg() >= first);
+            VReg::new(vreg.vreg() - first, vreg.class())
+        };
+        for op in &mut self.vcode.operands {
+            if op.as_fixed_nonallocatable().is_none() {
+                *op = Operand::new(renumber(op.vreg()), op.constraint(), op.kind(), op.pos());
+            }
+        }
+        for vreg in &mut self.vcode.block_params {
+            *vreg = renumber(*vreg);
+        }
+        for vreg in &mut self.vcode.branch_block_args {
+            *vreg = renumber(*vreg);
+        }
+        for (vreg, ..) in &mut self.vcode.debug_value_labels {
+            *vreg = renumber(*vreg);
+        }
     }
 
     /// Add a user stack map for the associated instruction.
@@ -1618,7 +1650,8 @@ impl<I: VCodeInst> RegallocFunction for VCode<I> {
     }
 
     fn num_vregs(&self) -> usize {
-        self.vreg_types.len()
+        // See `VCodeBuilder::number_vregs_for_regalloc`.
+        self.vreg_types.len() - first_user_vreg_index()
     }
 
     fn debug_value_labels(&self) -> &[(VReg, InsnIndex, InsnIndex, u32)] {
@@ -1652,6 +1685,12 @@ impl<I: VCodeInst> Debug for VRegAllocator<I> {
     }
 }
 
+/// A vreg as register allocation numbers it, as lowering numbered it (see
+/// `VCodeBuilder::number_vregs_for_regalloc`).
+fn unnumbered(vreg: VReg) -> VReg {
+    VReg::new(vreg.vreg() + first_user_vreg_index(), vreg.class())
+}
+
 impl<I: VCodeInst> fmt::Debug for VCode<I> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "VCode {{")?;
@@ -1666,6 +1705,9 @@ impl<I: VCodeInst> fmt::Debug for VCode<I> {
                 "Block {}({:?}):",
                 block.index(),
                 self.block_params(block)
+                    .iter()
+                    .map(|&v| unnumbered(v))
+                    .collect::<Vec<_>>()
             )?;
             if let Some(bb) = self.bindex_to_bb(block) {
                 writeln!(f, "    (original IR block: {bb})")?;
@@ -1676,6 +1718,9 @@ impl<I: VCodeInst> fmt::Debug for VCode<I> {
                     "    (successor: Block {}({:?}))",
                     succ.index(),
                     self.branch_blockparams(block, InsnIndex::new(0) /* dummy */, succ_idx)
+                        .iter()
+                        .map(|&v| unnumbered(v))
+                        .collect::<Vec<_>>()
                 )?;
             }
             for inst in self.block_ranges.get(block.index()) {
