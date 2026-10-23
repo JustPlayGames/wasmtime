@@ -1008,6 +1008,15 @@ impl<I: VCodeInst> VCode<I> {
                         // (and don't emit the return; the actual
                         // epilogue will contain it).
                         if self.insts[iix.index()].is_term() == MachTerminator::Ret {
+                            // Windows x64's unwinder takes a return address followed by an
+                            // epilogue for a frame that is already leaving: it unwinds it
+                            // without calling its exception handler (as LLVM, keep a call
+                            // from returning into the epilogue).
+                            if self.abi.call_conv() == crate::isa::CallConv::WindowsFastcall
+                                && buffer.last_call_ret_addr() == Some(buffer.cur_offset())
+                            {
+                                do_emit(&I::gen_nop(1), &mut disasm, &mut buffer, &mut state);
+                            }
                             log::trace!("emitting epilogue");
                             for inst in self.abi.gen_epilogue() {
                                 do_emit(&inst, &mut disasm, &mut buffer, &mut state);

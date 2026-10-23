@@ -258,6 +258,7 @@ block0(v0: i64):
 ;   movq %rcx, %rdx
 ;   movdqa %xmm3, %xmm2
 ;   call    *%r8
+;   nop
 ;   addq $0x30, %rsp
 ;   movq %rbp, %rsp
 ;   popq %rbp
@@ -277,6 +278,7 @@ block0(v0: i64):
 ;   movq %rcx, %rdx
 ;   movdqa %xmm3, %xmm2
 ;   callq *%r8
+;   nop
 ;   addq $0x30, %rsp
 ;   movq %rbp, %rsp
 ;   popq %rbp
