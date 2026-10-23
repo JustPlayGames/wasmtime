@@ -173,6 +173,8 @@ pub(crate) fn create_unwind_info_from_insts<MR: RegisterMapper<Reg>>(
 
     let mut cfa_offset = 0;
     let mut clobber_offset_to_cfa = 0;
+    // Whether the CFA is already defined in terms of FP (`FramePointerSet`).
+    let mut cfa_on_fp = false;
     for &(instruction_offset, ref inst) in insts {
         match inst {
             &UnwindInst::PushFrameRegs {
@@ -216,7 +218,10 @@ pub(crate) fn create_unwind_info_from_insts<MR: RegisterMapper<Reg>>(
                 // offset, only the register.  (This is done only if the target
                 // defines a frame pointer register.)
                 if let Some(fp) = mr.fp() {
-                    instructions.push((instruction_offset, CallFrameInstruction::CfaRegister(fp)));
+                    if !cfa_on_fp {
+                        instructions
+                            .push((instruction_offset, CallFrameInstruction::CfaRegister(fp)));
+                    }
                 }
                 // Record initial CFA offset.  This will be used with later
                 // StackAlloc calls if we do not have a frame pointer.
@@ -224,6 +229,15 @@ pub(crate) fn create_unwind_info_from_insts<MR: RegisterMapper<Reg>>(
                 // Record distance from CFA downward to clobber area so we can
                 // express clobber offsets later in terms of CFA.
                 clobber_offset_to_cfa = offset_upward_to_caller_sp + offset_downward_to_clobbers;
+            }
+            &UnwindInst::FramePointerSet => {
+                // As in `DefineNewFrame`: FP was just set to SP, so only the
+                // register changes. From here on SP may move (stack probes)
+                // without the CFA moving with it.
+                if let Some(fp) = mr.fp() {
+                    instructions.push((instruction_offset, CallFrameInstruction::CfaRegister(fp)));
+                    cfa_on_fp = true;
+                }
             }
             &UnwindInst::DefineFramelessFrame {
                 offset_upward_to_caller_sp,

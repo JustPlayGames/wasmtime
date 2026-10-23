@@ -614,6 +614,14 @@ impl ABIMachineSpec for X64ABIMachineSpec {
             inst: asm::inst::movq_mr::new(w_rbp, r_rsp).into(),
         });
 
+        // Anchor the CFA on RBP before the stack probes that may follow move
+        // RSP (outside Windows; see `gen_inline_probestack`).
+        if flags.unwind_info() {
+            insts.push(Inst::Unwind {
+                inst: UnwindInst::FramePointerSet,
+            });
+        }
+
         insts
     }
 
@@ -688,7 +696,11 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         // describe any stack allocation, so they must not move RSP: a fault
         // in them, which is how a stack overflow shows up, would otherwise
         // unwind from the wrong return address. Elsewhere RSP moves before
-        // each store so that tools like valgrind don't see writes below it.
+        // each store so that tools like valgrind don't see writes below it
+        // (and older Linux kernels grow the main thread's stack only near
+        // RSP); the CFI then follows the frame pointer, set before the probes
+        // (`UnwindInst::FramePointerSet`), so frames without one aren't probed
+        // this way (see `omit_frame_pointer`).
         let keep_sp = windows;
         // Unroll at most n consecutive probes, before falling back to using a loop
         //
