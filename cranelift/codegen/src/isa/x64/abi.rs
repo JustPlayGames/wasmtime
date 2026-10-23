@@ -717,11 +717,16 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         flags: &settings::Flags,
         frame_layout: &mut FrameLayout,
     ) -> bool {
-        // Only System V frames are described by DWARF CFI that can be anchored
-        // on RSP; stack arguments are addressed from RBP.
-        if !matches!(call_conv, CallConv::SystemV | CallConv::Fast)
-            || frame_layout.incoming_args_size != 0
-            || frame_layout.tail_args_size != 0
+        // Stack arguments are addressed from RBP. A Windows x64 function always
+        // has the 32 bytes of shadow space its caller reserved above the return
+        // address, which it doesn't use itself.
+        let caller_area = match call_conv {
+            CallConv::SystemV | CallConv::Fast => 0,
+            CallConv::WindowsFastcall => 32,
+            _ => return false,
+        };
+        if frame_layout.incoming_args_size != caller_area
+            || frame_layout.tail_args_size != caller_area
         {
             return false;
         }
@@ -731,10 +736,13 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         if stack_size % 16 != 0 {
             return false;
         }
-        // Stack probes move RSP before the unwind information describes the
-        // frame (see `gen_inline_probestack`): keep the frame pointer in frames
-        // large enough to be probed.
-        if flags.enable_probestack() && stack_size + 16 >= 1 << flags.probestack_size_log2() {
+        // Outside Windows, stack probes move RSP before the unwind information
+        // describes the frame (see `gen_inline_probestack`): keep the frame
+        // pointer in frames large enough to be probed.
+        if call_conv != CallConv::WindowsFastcall
+            && flags.enable_probestack()
+            && stack_size + 16 >= 1 << flags.probestack_size_log2()
+        {
             return false;
         }
         // RSP is 8 below a 16-byte boundary on entry (the pushed return

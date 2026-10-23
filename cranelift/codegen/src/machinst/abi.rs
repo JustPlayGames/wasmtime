@@ -2374,7 +2374,6 @@ impl<M: ABIMachineSpec> Callee<M> {
             && !self.needs_frame_pointer
             && self.dynamic_stackslots.is_empty()
             && self.stack_limit.is_none()
-            && !self.windows
         {
             M::omit_frame_pointer(self.call_conv, &self.flags, &mut frame_layout);
         }
