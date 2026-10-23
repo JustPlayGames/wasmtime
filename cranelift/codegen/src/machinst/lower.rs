@@ -393,7 +393,10 @@ impl<'func, I: VCodeInst> Lower<'func, I> {
         // various temporaries, but two per Value is a good starting point.
         let mut vregs = VRegAllocator::with_capacity(f.dfg.num_values() * 2);
 
+        // Sized up front: assigning to a map one entry past its end grows it by one entry at a
+        // time.
         let mut value_regs = SecondaryMap::with_default(ValueRegs::invalid());
+        value_regs.resize(f.dfg.num_values());
         let mut try_call_rets = FxHashMap::default();
         let mut try_call_payloads = FxHashMap::default();
 
@@ -477,7 +480,9 @@ impl<'func, I: VCodeInst> Lower<'func, I> {
         // Compute instruction colors and find instructions with side-effects.
         let mut cur_color = 0;
         let mut block_end_colors = SecondaryMap::with_default(InstColor::new(0));
+        block_end_colors.resize(f.dfg.num_blocks());
         let mut side_effect_inst_entry_colors = SecondaryMap::with_default(InstColor::new(0));
+        side_effect_inst_entry_colors.resize(f.dfg.num_insts());
         for bb in f.layout.blocks() {
             cur_color += 1;
             for inst in f.layout.block_insts(bb) {
@@ -505,7 +510,11 @@ impl<'func, I: VCodeInst> Lower<'func, I> {
             block_end_colors,
             side_effect_inst_entry_colors,
             value_ir_uses,
-            value_lowered_uses: SecondaryMap::default(),
+            value_lowered_uses: {
+                let mut uses = SecondaryMap::default();
+                uses.resize(f.dfg.num_values());
+                uses
+            },
             opportunistic_defs: FxHashMap::default(),
             inst_sunk: FxHashSet::default(),
             cur_scan_entry_color: None,
@@ -1427,6 +1436,7 @@ fn compute_use_states(
     // efficient than a full indirect-use-counting pass.
 
     let mut value_ir_uses = SecondaryMap::with_default(ValueUseState::Unused);
+    value_ir_uses.resize(f.dfg.num_values());
 
     // Step 1: call `mark_use` on every use. When a value is used
     // multiple times, it is pushed into `multiple_stack`, which we
