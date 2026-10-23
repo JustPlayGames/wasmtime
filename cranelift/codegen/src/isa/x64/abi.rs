@@ -727,6 +727,7 @@ impl ABIMachineSpec for X64ABIMachineSpec {
     fn omit_frame_pointer(
         call_conv: isa::CallConv,
         flags: &settings::Flags,
+        windows: bool,
         frame_layout: &mut FrameLayout,
     ) -> bool {
         // Stack arguments are addressed from RBP. A Windows x64 function always
@@ -748,11 +749,14 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         if stack_size % 16 != 0 {
             return false;
         }
-        // Outside Windows, stack probes move RSP before the unwind information
-        // describes the frame (see `gen_inline_probestack`): keep the frame
-        // pointer in frames large enough to be probed.
-        if call_conv != CallConv::WindowsFastcall
+        // Outside Windows (whatever the calling convention), inline stack
+        // probes move RSP, and only a frame pointer keeps the CFA right while
+        // they run (see `gen_inline_probestack`): keep it in frames large
+        // enough to be probed. The outlined probe restores RSP before it
+        // returns and describes its own frame.
+        if !windows
             && flags.enable_probestack()
+            && flags.probestack_strategy() == settings::ProbestackStrategy::Inline
             && stack_size + 16 >= 1 << flags.probestack_size_log2()
         {
             return false;

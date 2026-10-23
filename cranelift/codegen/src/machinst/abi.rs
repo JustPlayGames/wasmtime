@@ -514,9 +514,13 @@ pub trait ABIMachineSpec {
     /// returns whether it did. Called only when frame pointers need not be
     /// preserved and the function does not read the frame pointer or its
     /// return address, switch stacks or make tail calls.
+    ///
+    /// `windows` is set when compiling for a Windows target, as for
+    /// `gen_inline_probestack`.
     fn omit_frame_pointer(
         _call_conv: isa::CallConv,
         _flags: &settings::Flags,
+        _windows: bool,
         _frame_layout: &mut FrameLayout,
     ) -> bool {
         false
@@ -2375,7 +2379,7 @@ impl<M: ABIMachineSpec> Callee<M> {
             && self.dynamic_stackslots.is_empty()
             && self.stack_limit.is_none()
         {
-            M::omit_frame_pointer(self.call_conv, &self.flags, &mut frame_layout);
+            M::omit_frame_pointer(self.call_conv, &self.flags, self.windows, &mut frame_layout);
         }
 
         if Self::frame_layout_exceeds_limit(&frame_layout, M::maximum_frame_size()) {

@@ -1,0 +1,36 @@
+test compile precise-output
+set unwind_info=false
+set omit_frame_pointers=true
+set enable_probestack=true
+set probestack_strategy=inline
+target x86_64-pc-windows-msvc
+
+; On Windows the probes leave RSP alone whatever the calling convention, so a
+; System V function needs no frame pointer for them.
+function %big_system_v() -> i64 system_v {
+    ss0 = explicit_slot 8192
+block0:
+    v0 = stack_addr.i64 ss0
+    v1 = load.i64 v0
+    return v1
+}
+
+; VCode:
+;   movl $0x0, -0x1000(%rsp)
+;   movl $0x0, -0x2000(%rsp)
+;   subq $0x2008, %rsp
+; block0:
+;   movq <offset:1>+(%rsp), %rax
+;   addq $0x2008, %rsp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   movl $0, -0x1000(%rsp)
+;   movl $0, -0x2000(%rsp)
+;   subq $0x2008, %rsp
+; block1: ; offset 0x1d
+;   movq (%rsp), %rax
+;   addq $0x2008, %rsp
+;   retq
+
