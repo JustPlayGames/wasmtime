@@ -18,6 +18,7 @@ use object::{
     BinaryFormat, RelocationEncoding, RelocationFlags, RelocationKind, SectionFlags, SectionKind,
     SymbolFlags, SymbolKind, SymbolScope, elf, macho,
 };
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt::Write as _;
@@ -240,6 +241,8 @@ pub struct ObjectModule {
     declarations: ModuleDeclarations,
     functions: SecondaryMap<FuncId, Option<(SymbolId, bool)>>,
     data_objects: SecondaryMap<DataId, Option<(SymbolId, bool)>>,
+    section_data: SecondaryMap<DataId, Option<SectionData>>,
+    section_relative_anonymous_data: bool,
     relocs: Vec<SymbolRelocs>,
     libcalls: HashMap<ir::LibCall, SymbolId>,
     libcall_names: Box<dyn Fn(ir::LibCall) -> String + Send + Sync>,
@@ -275,6 +278,13 @@ impl ObjectModule {
             declarations: ModuleDeclarations::default(),
             functions: SecondaryMap::new(),
             data_objects: SecondaryMap::new(),
+            section_data: SecondaryMap::new(),
+            // Mach-O's `subsections_via_symbols` splits sections at symbols, so data there keeps a
+            // symbol of its own.
+            section_relative_anonymous_data: matches!(
+                builder.binary_format,
+                object::BinaryFormat::Elf | object::BinaryFormat::Coff
+            ),
             relocs: Vec::new(),
             libcalls: HashMap::new(),
             libcall_names: builder.libcall_names,
@@ -413,6 +423,13 @@ impl Module for ObjectModule {
     fn declare_anonymous_data(&mut self, writable: bool, tls: bool) -> ModuleResult<DataId> {
         let id = self.declarations.declare_anonymous_data(writable, tls)?;
 
+        // Like the `.L` labels of an assembler, anonymous data gets no symbol: relocations
+        // against it use its section's symbol and its offset there (see `SectionData`).
+        if self.section_relative_anonymous_data && !tls {
+            self.section_data[id] = Some(SectionData::Declared);
+            return Ok(id);
+        }
+
         let kind = if tls {
             SymbolKind::Tls
         } else {
@@ -496,13 +513,24 @@ impl Module for ObjectModule {
             ));
         }
 
-        let &mut (symbol, ref mut defined) = self.data_objects[data_id].as_mut().unwrap();
-        if *defined {
-            return Err(ModuleError::DuplicateDefinition(
-                decl.linkage_name(data_id).into_owned(),
-            ));
-        }
-        *defined = true;
+        let symbol = match self.section_data[data_id] {
+            Some(SectionData::Declared) => None,
+            Some(SectionData::Defined { .. }) => {
+                return Err(ModuleError::DuplicateDefinition(
+                    decl.linkage_name(data_id).into_owned(),
+                ));
+            }
+            None => {
+                let &mut (symbol, ref mut defined) = self.data_objects[data_id].as_mut().unwrap();
+                if *defined {
+                    return Err(ModuleError::DuplicateDefinition(
+                        decl.linkage_name(data_id).into_owned(),
+                    ));
+                }
+                *defined = true;
+                Some(symbol)
+            }
+        };
 
         let &DataDescription {
             ref init,
@@ -593,17 +621,31 @@ impl Module for ObjectModule {
         };
 
         let align = std::cmp::max(align.unwrap_or(1), self.isa.symbol_alignment());
-        let offset = match *init {
-            Init::Uninitialized => {
+        let offset = match (init, symbol) {
+            (Init::Uninitialized, _) => {
                 panic!("data is not initialized yet");
             }
-            Init::Zeros { size } => self
+            (&Init::Zeros { size }, Some(symbol)) => {
+                self.object
+                    .add_symbol_bss(symbol, section, size as u64, align)
+            }
+            (&Init::Zeros { size }, None) => {
+                self.object.append_section_bss(section, size as u64, align)
+            }
+            (Init::Bytes { contents }, Some(symbol)) => self
                 .object
-                .add_symbol_bss(symbol, section, size as u64, align),
-            Init::Bytes { ref contents } => self
-                .object
-                .add_symbol_data(symbol, section, &contents, align),
+                .add_symbol_data(symbol, section, contents, align),
+            (Init::Bytes { contents }, None) => {
+                self.object.append_section_data(section, contents, align)
+            }
         };
+        if symbol.is_none() {
+            self.section_data[data_id] = Some(SectionData::Defined {
+                section,
+                offset,
+                size: init.size() as u64,
+            });
+        }
         if !relocs.is_empty() {
             self.relocs.push(SymbolRelocs {
                 section,
@@ -619,10 +661,12 @@ impl Module for ObjectModule {
                     _ => unreachable!(),
                 },
                 object::BinaryFormat::Coff => {}
-                object::BinaryFormat::MachO => match self.object.symbol_flags_mut(symbol) {
-                    SymbolFlags::MachO { n_desc, .. } => *n_desc |= macho::N_NO_DEAD_STRIP,
-                    _ => unreachable!(),
-                },
+                object::BinaryFormat::MachO => {
+                    match self.object.symbol_flags_mut(symbol.unwrap()) {
+                        SymbolFlags::MachO { n_desc, .. } => *n_desc |= macho::N_NO_DEAD_STRIP,
+                        _ => unreachable!(),
+                    }
+                }
                 _ => unreachable!(),
             }
         }
@@ -651,6 +695,10 @@ impl ObjectModule {
         }
         *defined = true;
 
+        let mut bytes = Cow::Borrowed(bytes);
+        let mut relocs = relocs;
+        self.relax_local_got_loads(&mut bytes, &mut relocs);
+
         let align = alignment.max(self.isa.symbol_alignment());
         let section = if self.per_function_section {
             // FIXME pass empty symbol name once add_subsection produces `.text` as section name
@@ -661,7 +709,7 @@ impl ObjectModule {
         } else {
             self.object.section_id(StandardSection::Text)
         };
-        let offset = self.object.add_symbol_data(symbol, section, bytes, align);
+        let offset = self.object.add_symbol_data(symbol, section, &bytes, align);
 
         if !relocs.is_empty() {
             self.relocs.push(SymbolRelocs {
@@ -696,7 +744,10 @@ impl ObjectModule {
                 }
 
                 assert!(
-                    self.data_objects[data_id].unwrap().1,
+                    matches!(
+                        self.section_data[data_id],
+                        Some(SectionData::Defined { .. })
+                    ) || self.data_objects[data_id].is_some_and(|(_, defined)| defined),
                     "data object \"{}\" with linkage {:?} must be defined but is not",
                     decl.linkage_name(data_id),
                     decl.linkage,
@@ -713,7 +764,12 @@ impl ObjectModule {
                 addend,
             } in &symbol.relocs
             {
-                let target_symbol = self.get_symbol(name);
+                let (target_symbol, addend) = match self.section_relative_target(name, flags) {
+                    Some((section_symbol, offset)) => {
+                        (section_symbol, addend + i64::try_from(offset).unwrap())
+                    }
+                    None => (self.get_symbol(name), addend),
+                };
                 self.object
                     .add_relocation(
                         symbol.section,
@@ -748,7 +804,107 @@ impl ObjectModule {
             object: self.object,
             functions: self.functions,
             data_objects: self.data_objects,
+            section_data: self.section_data,
         }
+    }
+
+    /// Turns `movq sym@GOTPCREL(%rip), %reg` into `leaq sym(%rip), %reg` when `sym` is local to
+    /// this object (x86-64 ELF), as the linker would relax it: such a symbol can never be
+    /// preempted or live outside the output. The relocation then becomes PC-relative, which
+    /// lets it address anonymous data through its section symbol, and saves the linker the GOT
+    /// relaxation.
+    fn relax_local_got_loads(&self, bytes: &mut Cow<'_, [u8]>, relocs: &mut [ObjectRelocRecord]) {
+        if self.object.format() != object::BinaryFormat::Elf
+            || self.isa.triple().architecture != target_lexicon::Architecture::X86_64
+        {
+            return;
+        }
+        for reloc in relocs {
+            if reloc.flags
+                != (RelocationFlags::Elf {
+                    r_type: elf::R_X86_64_REX_GOTPCRELX,
+                })
+                || !self.is_local_target(&reloc.name)
+            {
+                continue;
+            }
+            // REX.W 8B /r with a RIP-relative ModRM (mod 00, r/m 101) right before the
+            // displacement: the encoding the linker relaxes too.
+            let at = reloc.offset as usize;
+            let Some(&[rex, opcode, modrm]) =
+                at.checked_sub(3).and_then(|at| bytes.get(at..at + 3))
+            else {
+                continue;
+            };
+            if rex & 0xf8 != 0x48 || opcode != 0x8b || modrm & 0xc7 != 0x05 {
+                continue;
+            }
+            bytes.to_mut()[at - 2] = 0x8d;
+            reloc.flags = RelocationFlags::Generic {
+                kind: RelocationKind::Relative,
+                encoding: RelocationEncoding::Generic,
+                size: 32,
+            };
+        }
+    }
+
+    /// Whether `name` is a function or (non-TLS) data object with local linkage.
+    fn is_local_target(&self, name: &ModuleRelocTarget) -> bool {
+        let ModuleRelocTarget::User { .. } = name else {
+            return false;
+        };
+        if ModuleDeclarations::is_function(name) {
+            self.declarations
+                .get_function_decl(FuncId::from_name(name))
+                .linkage
+                == Linkage::Local
+        } else {
+            let decl = self.declarations.get_data_decl(DataId::from_name(name));
+            decl.linkage == Linkage::Local && !decl.tls
+        }
+    }
+
+    /// The section symbol and offset to relocate against for anonymous data placed without a
+    /// symbol, for the relocations that can take one (an absolute or PC-relative address, as
+    /// an assembler emits for a `.L` label). `None` for everything else, which then relocates
+    /// against the target's own symbol.
+    fn section_relative_target(
+        &mut self,
+        name: &ModuleRelocTarget,
+        flags: RelocationFlags,
+    ) -> Option<(SymbolId, u64)> {
+        let ModuleRelocTarget::User { .. } = name else {
+            return None;
+        };
+        if ModuleDeclarations::is_function(name) {
+            return None;
+        }
+        let Some(SectionData::Defined {
+            section, offset, ..
+        }) = self.section_data[DataId::from_name(name)]
+        else {
+            return None;
+        };
+        let section_relative = match flags {
+            RelocationFlags::Generic {
+                kind: RelocationKind::Absolute | RelocationKind::Relative,
+                ..
+            } => true,
+            RelocationFlags::Elf { r_type } => {
+                matches!(
+                    self.isa.triple().architecture,
+                    target_lexicon::Architecture::Aarch64(_)
+                ) && matches!(
+                    r_type,
+                    elf::R_AARCH64_ADR_PREL_PG_HI21 | elf::R_AARCH64_ADD_ABS_LO12_NC
+                )
+            }
+            _ => false,
+        };
+        if !section_relative {
+            return None;
+        }
+        Some((self.object.section_symbol(section), offset))
     }
 
     /// This should only be called during finish because it creates
@@ -761,7 +917,12 @@ impl ObjectModule {
                     self.functions[id].unwrap().0
                 } else {
                     let id = DataId::from_name(name);
-                    self.data_objects[id].unwrap().0
+                    data_symbol(
+                        &mut self.object,
+                        &mut self.data_objects,
+                        &self.section_data,
+                        id,
+                    )
                 }
             }
             ModuleRelocTarget::LibCall(ref libcall) => {
@@ -1144,8 +1305,11 @@ pub struct ObjectProduct {
     pub object: Object<'static>,
     /// Symbol IDs for functions (both declared and defined).
     pub functions: SecondaryMap<FuncId, Option<(SymbolId, bool)>>,
-    /// Symbol IDs for data objects (both declared and defined).
+    /// Symbol IDs for data objects (both declared and defined). Anonymous data placed without a
+    /// symbol of its own (ELF and COFF) is `None` here unless something needed its symbol: use
+    /// [`ObjectProduct::data_symbol`] or [`ObjectProduct::data_symbol_and_offset`].
     pub data_objects: SecondaryMap<DataId, Option<(SymbolId, bool)>>,
+    section_data: SecondaryMap<DataId, Option<SectionData>>,
 }
 
 impl ObjectProduct {
@@ -1156,9 +1320,29 @@ impl ObjectProduct {
     }
 
     /// Return the `SymbolId` for the given data object.
+    ///
+    /// For anonymous data placed without a symbol, this adds a local symbol for it. Prefer
+    /// [`ObjectProduct::data_symbol_and_offset`], which addresses it through its section.
     #[inline]
-    pub fn data_symbol(&self, id: DataId) -> SymbolId {
-        self.data_objects[id].unwrap().0
+    pub fn data_symbol(&mut self, id: DataId) -> SymbolId {
+        data_symbol(
+            &mut self.object,
+            &mut self.data_objects,
+            &self.section_data,
+            id,
+        )
+    }
+
+    /// Return the symbol to relocate against for the given data object, and the offset to add:
+    /// its section's symbol and its offset there for anonymous data placed without a symbol,
+    /// else its own symbol and 0.
+    pub fn data_symbol_and_offset(&mut self, id: DataId) -> (SymbolId, u64) {
+        match self.section_data[id] {
+            Some(SectionData::Defined {
+                section, offset, ..
+            }) => (self.object.section_symbol(section), offset),
+            _ => (self.data_objects[id].unwrap().0, 0),
+        }
     }
 
     /// Write the object bytes in memory.
@@ -1166,6 +1350,52 @@ impl ObjectProduct {
     pub fn emit(self) -> Result<Vec<u8>, object::write::Error> {
         self.object.write()
     }
+}
+
+/// Where anonymous data without a symbol of its own is (ELF and COFF): with tens of thousands
+/// of anonymous constants per object, their `.L` symbols are most of the symbol table the
+/// linker reads and writes. Relocations against them use the section symbol instead.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum SectionData {
+    Declared,
+    Defined {
+        section: SectionId,
+        offset: u64,
+        size: u64,
+    },
+}
+
+/// The symbol of a data object, adding a local one for anonymous data placed without a symbol.
+fn data_symbol(
+    object: &mut Object<'static>,
+    data_objects: &mut SecondaryMap<DataId, Option<(SymbolId, bool)>>,
+    section_data: &SecondaryMap<DataId, Option<SectionData>>,
+    id: DataId,
+) -> SymbolId {
+    if let Some((symbol, _)) = data_objects[id] {
+        return symbol;
+    }
+    let Some(SectionData::Defined {
+        section,
+        offset,
+        size,
+    }) = section_data[id]
+    else {
+        panic!("data object {id} is not declared, or anonymous and not defined");
+    };
+    let symbol = object.add_symbol(Symbol {
+        // The name `ModuleDeclarations` gives anonymous data.
+        name: format!(".Ldata{:x}", id.as_u32()).into_bytes(),
+        value: offset,
+        size,
+        kind: SymbolKind::Data,
+        scope: SymbolScope::Compilation,
+        weak: false,
+        section: SymbolSection::Section(section),
+        flags: SymbolFlags::None,
+    });
+    data_objects[id] = Some((symbol, true));
+    symbol
 }
 
 #[derive(Clone)]

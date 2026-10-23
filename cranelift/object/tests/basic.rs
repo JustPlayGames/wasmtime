@@ -670,7 +670,7 @@ fn x86_64_elf_pic_symbol_address_relocations() {
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
     // Under `is_pic`, symbols are addressed through GOT loads the linker may relax
-    // (`R_X86_64_REX_GOTPCRELX`), whether they are defined in the module or imported.
+    // (`R_X86_64_REX_GOTPCRELX`); a local symbol's load is relaxed to a `lea` already.
     let mut flag_builder = settings::builder();
     flag_builder.set("is_pic", "true").unwrap();
     let isa = cranelift_codegen::isa::lookup_by_name("x86_64-unknown-linux-gnu")
@@ -742,10 +742,182 @@ fn x86_64_elf_pic_symbol_address_relocations() {
     };
     assert_eq!(
         r_type(symbol("local_data").index()),
-        object::elf::R_X86_64_REX_GOTPCRELX
+        object::elf::R_X86_64_PC32
     );
     assert_eq!(
         r_type(symbol("imported_data").index()),
         object::elf::R_X86_64_REX_GOTPCRELX
     );
+}
+
+/// A module with one anonymous constant (8 bytes, after 16 bytes of other anonymous data), a
+/// function returning its address, and a pointer to it in anonymous data.
+fn anonymous_data_object(triple: &str, is_pic: bool) -> Vec<u8> {
+    let mut flag_builder = settings::builder();
+    flag_builder
+        .set("is_pic", if is_pic { "true" } else { "false" })
+        .unwrap();
+    let isa = cranelift_codegen::isa::lookup_by_name(triple)
+        .unwrap()
+        .finish(settings::Flags::new(flag_builder))
+        .unwrap();
+    let mut module =
+        ObjectModule::new(ObjectBuilder::new(isa, "test", default_libcall_names()).unwrap());
+
+    let first = module.declare_anonymous_data(false, false).unwrap();
+    let mut data_desc = DataDescription::new();
+    data_desc.define(vec![1; 16].into_boxed_slice());
+    module.define_data(first, &data_desc).unwrap();
+
+    let constant = module.declare_anonymous_data(false, false).unwrap();
+    let mut data_desc = DataDescription::new();
+    data_desc.define(vec![2; 8].into_boxed_slice());
+    data_desc.set_align(8);
+    module.define_data(constant, &data_desc).unwrap();
+
+    let pointer = module.declare_anonymous_data(false, false).unwrap();
+    let mut data_desc = DataDescription::new();
+    data_desc.define(vec![0; 8].into_boxed_slice());
+    let gv = module.declare_data_in_data(constant, &mut data_desc);
+    data_desc.write_data_addr(0, gv, 4);
+    module.define_data(pointer, &data_desc).unwrap();
+
+    let sig = Signature {
+        params: vec![],
+        returns: vec![AbiParam::new(types::I64)],
+        call_conv: module.target_config().default_call_conv,
+    };
+    let func_id = module
+        .declare_function("address", Linkage::Export, &sig)
+        .unwrap();
+    let mut ctx = Context::new();
+    ctx.func = Function::with_name_signature(UserFuncName::user(0, func_id.as_u32()), sig);
+    let mut func_ctx = FunctionBuilderContext::new();
+    {
+        let mut bcx = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
+        let block = bcx.create_block();
+        bcx.switch_to_block(block);
+        let gv = module.declare_data_in_func(constant, &mut bcx.func);
+        let address = bcx
+            .ins()
+            .symbol_value(module.target_config().pointer_type(), gv);
+        bcx.ins().return_(&[address]);
+        bcx.seal_all_blocks();
+        bcx.finalize(module.target_config());
+    }
+    module.define_function(func_id, &mut ctx).unwrap();
+
+    module.finish().emit().expect("emit object file")
+}
+
+#[test]
+fn anonymous_data_is_addressed_through_its_section() {
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+
+    for (triple, is_pic) in [
+        ("x86_64-unknown-linux-gnu", true),
+        ("x86_64-unknown-linux-gnu", false),
+        ("x86_64-pc-windows-msvc", false),
+        ("aarch64-unknown-linux-gnu", false),
+    ] {
+        let bytes = anonymous_data_object(triple, is_pic);
+        let file = object::File::parse(&*bytes).expect("parse emitted object");
+        assert!(
+            file.symbols()
+                .all(|symbol| !symbol.name().unwrap().starts_with(".Ldata")),
+            "{triple}: anonymous data has no symbols"
+        );
+        let rodata = file
+            .sections()
+            .find(|section| section.data().unwrap().starts_with(&[1; 16]))
+            .expect("read-only data section");
+
+        // The relocations of the function and of the pointer both target the section of
+        // the constant, at its offset.
+        let mut targets = 0;
+        for section in file.sections() {
+            for (offset, relocation) in section.relocations() {
+                let object::RelocationTarget::Symbol(symbol) = relocation.target() else {
+                    continue;
+                };
+                let symbol = file.symbol_by_index(symbol).unwrap();
+                assert_eq!(
+                    symbol.kind(),
+                    object::SymbolKind::Section,
+                    "{triple}: relocation at {offset:#x} of {} targets a section",
+                    section.name().unwrap()
+                );
+                assert_eq!(symbol.section_index(), Some(rodata.index()));
+                let addend = if relocation.has_implicit_addend() {
+                    let data = section.data().unwrap();
+                    let at = offset as usize;
+                    match relocation.size() {
+                        32 => i64::from(i32::from_le_bytes(data[at..at + 4].try_into().unwrap())),
+                        64 => i64::from_le_bytes(data[at..at + 8].try_into().unwrap()),
+                        size => panic!("{triple}: relocation size {size}"),
+                    }
+                } else {
+                    relocation.addend()
+                };
+                let expected = match (section.kind(), relocation.kind()) {
+                    // The pointer's addend of 4.
+                    (_, object::RelocationKind::Absolute) => 16 + 4,
+                    // `lea` and `adrp`/`add`: the displacement is from the end of the
+                    // instruction on x86-64 (COFF's REL32 holds that in its type).
+                    _ if triple.starts_with("x86_64") && triple.contains("linux") => 16 - 4,
+                    _ => 16,
+                };
+                assert_eq!(addend, expected, "{triple}: addend at {offset:#x}");
+                targets += 1;
+            }
+        }
+        assert!(targets >= 2, "{triple}: {targets} relocations");
+
+        // On x86-64 ELF under `is_pic` the GOT load became a `lea`.
+        if triple == "x86_64-unknown-linux-gnu" && is_pic {
+            let address = file
+                .symbols()
+                .find(|symbol| symbol.name() == Ok("address"))
+                .unwrap();
+            let text = file
+                .section_by_index(address.section_index().unwrap())
+                .unwrap();
+            let (offset, _) = text.relocations().next().unwrap();
+            assert_eq!(text.data().unwrap()[offset as usize - 2], 0x8d, "lea");
+        }
+    }
+}
+
+#[test]
+fn anonymous_data_symbol_on_request() {
+    // A relocation that needs a symbol (a GOT load of a TLS-free anonymous object can't occur
+    // here, so ask through the product) gets a local one at the data's offset.
+    let isa = cranelift_codegen::isa::lookup_by_name("x86_64-unknown-linux-gnu")
+        .unwrap()
+        .finish(settings::Flags::new(settings::builder()))
+        .unwrap();
+    let mut module =
+        ObjectModule::new(ObjectBuilder::new(isa, "test", default_libcall_names()).unwrap());
+    let first = module.declare_anonymous_data(true, false).unwrap();
+    let mut data_desc = DataDescription::new();
+    data_desc.define_zeroinit(24);
+    module.define_data(first, &data_desc).unwrap();
+    let second = module.declare_anonymous_data(true, false).unwrap();
+    let mut data_desc = DataDescription::new();
+    data_desc.define_zeroinit(8);
+    data_desc.set_align(8);
+    module.define_data(second, &data_desc).unwrap();
+
+    let mut product = module.finish();
+    let (section_symbol, offset) = product.data_symbol_and_offset(second);
+    assert_eq!(offset, 24);
+    assert_eq!(
+        product.object.symbol(section_symbol).kind,
+        object::SymbolKind::Section
+    );
+    let symbol = product.data_symbol(second);
+    assert_eq!(product.object.symbol(symbol).value, 24);
+    assert_eq!(product.object.symbol(symbol).size, 8);
+    assert_eq!(product.data_symbol(second), symbol);
+    product.emit().expect("emit object file");
 }
