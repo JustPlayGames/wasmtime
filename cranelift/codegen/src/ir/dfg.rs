@@ -990,9 +990,20 @@ impl DataFlowGraph {
         self.clear_results(inst);
 
         let mut reuse = reuse.fuse();
-        let result_tys: SmallVec<[_; 16]> = self.inst_result_types(inst, ctrl_typevar).collect();
+        // The result types, looked up one at a time rather than collected first: this runs for
+        // every instruction built.
+        let sig = self.non_tail_call_or_try_call_signature(inst);
+        let constraints = self.insts[inst].opcode().constraints();
+        let num_results = match sig {
+            Some(sig) => self.signatures[sig].returns.len(),
+            None => constraints.num_fixed_results(),
+        };
 
-        for (expected, &ty) in result_tys.iter().enumerate() {
+        for expected in 0..num_results {
+            let ty = match sig {
+                Some(sig) => self.signatures[sig].returns[expected].value_type,
+                None => constraints.result_type(expected, ctrl_typevar),
+            };
             let num = u16::try_from(expected).expect("Result value index should fit in u16");
             let value_data = ValueData::Inst { ty, num, inst };
             let v = if let Some(Some(v)) = reuse.next() {
@@ -1007,7 +1018,7 @@ impl DataFlowGraph {
             debug_assert_eq!(expected, actual);
         }
 
-        result_tys.len()
+        num_results
     }
 
     /// Clear the list of result values from `inst`.
