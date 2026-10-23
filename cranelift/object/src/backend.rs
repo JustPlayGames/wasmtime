@@ -12,11 +12,12 @@ use cranelift_module::{
 };
 use log::{info, warn};
 use object::write::{
-    Object, Relocation, SectionId, StandardSection, Symbol, SymbolId, SymbolSection,
+    Comdat, ComdatId, Object, Relocation, SectionId, StandardSection, Symbol, SymbolId,
+    SymbolSection,
 };
 use object::{
-    BinaryFormat, RelocationEncoding, RelocationFlags, RelocationKind, SectionFlags, SectionKind,
-    SymbolFlags, SymbolKind, SymbolScope, elf, macho,
+    BinaryFormat, ComdatKind, RelocationEncoding, RelocationFlags, RelocationKind, SectionFlags,
+    SectionKind, SymbolFlags, SymbolKind, SymbolScope, elf, macho,
 };
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -130,13 +131,15 @@ impl ObjectBuilder {
         })
     }
 
-    /// Set if every function should end up in their own section.
+    /// Set if every function should end up in their own section. On COFF, each is a COMDAT that
+    /// the linker can leave out when nothing references it (`/OPT:REF`).
     pub fn per_function_section(&mut self, per_function_section: bool) -> &mut Self {
         self.per_function_section = per_function_section;
         self
     }
 
-    /// Set if every data object should end up in their own section.
+    /// Set if every data object should end up in their own section. On COFF, each is a COMDAT
+    /// (except TLS data and data marked as used).
     pub fn per_data_object_section(&mut self, per_data_object_section: bool) -> &mut Self {
         self.per_data_object_section = per_data_object_section;
         self
@@ -243,6 +246,7 @@ pub struct ObjectModule {
     data_objects: SecondaryMap<DataId, Option<(SymbolId, bool)>>,
     section_data: SecondaryMap<DataId, Option<SectionData>>,
     section_relative_anonymous_data: bool,
+    section_comdats: HashMap<SectionId, ComdatId>,
     relocs: Vec<SymbolRelocs>,
     libcalls: HashMap<ir::LibCall, SymbolId>,
     libcall_names: Box<dyn Fn(ir::LibCall) -> String + Send + Sync>,
@@ -285,6 +289,7 @@ impl ObjectModule {
                 builder.binary_format,
                 object::BinaryFormat::Elf | object::BinaryFormat::Coff
             ),
+            section_comdats: HashMap::new(),
             relocs: Vec::new(),
             libcalls: HashMap::new(),
             libcall_names: builder.libcall_names,
@@ -569,7 +574,25 @@ impl Module for ObjectModule {
             } else {
                 StandardSection::ReadOnlyDataWithRel
             };
-            if self.per_data_object_section || used {
+            if self.per_data_object_section
+                && !used
+                && !decl.tls
+                && self.object.format() == object::BinaryFormat::Coff
+            {
+                let (name, kind) = match section_kind {
+                    StandardSection::Data => (&b".data"[..], SectionKind::Data),
+                    StandardSection::ReadOnlyData => (&b".rdata"[..], SectionKind::ReadOnlyData),
+                    StandardSection::ReadOnlyDataWithRel => {
+                        (&b".rdata"[..], SectionKind::ReadOnlyDataWithRel)
+                    }
+                    StandardSection::UninitializedData => {
+                        (&b".bss"[..], SectionKind::UninitializedData)
+                    }
+                    _ => unreachable!("{section_kind:?}"),
+                };
+                let leader = decl.linkage_name(data_id).into_owned().into_bytes();
+                self.coff_comdat_section(name, kind, leader)
+            } else if self.per_data_object_section || used {
                 // FIXME pass empty symbol name once add_subsection produces `.text` as section name
                 // instead of `.text.` when passed an empty symbol name. (object#748) Until then
                 // pass `subsection` to produce `.text.subsection` as section name to reduce
@@ -700,15 +723,24 @@ impl ObjectModule {
         self.relax_local_got_loads(&mut bytes, &mut relocs);
 
         let align = alignment.max(self.isa.symbol_alignment());
-        let section = if self.per_function_section {
-            // FIXME pass empty symbol name once add_subsection produces `.text` as section name
-            // instead of `.text.` when passed an empty symbol name. (object#748) Until then pass
-            // `subsection` to produce `.text.subsection` as section name to reduce confusion.
-            self.object
-                .add_subsection(StandardSection::Text, b"subsection")
-        } else {
-            self.object.section_id(StandardSection::Text)
-        };
+        let section =
+            if self.per_function_section && self.object.format() == object::BinaryFormat::Coff {
+                let leader = self
+                    .declarations
+                    .get_function_decl(func_id)
+                    .linkage_name(func_id)
+                    .into_owned()
+                    .into_bytes();
+                self.coff_comdat_section(b".text", SectionKind::Text, leader)
+            } else if self.per_function_section {
+                // FIXME pass empty symbol name once add_subsection produces `.text` as section name
+                // instead of `.text.` when passed an empty symbol name. (object#748) Until then pass
+                // `subsection` to produce `.text.subsection` as section name to reduce confusion.
+                self.object
+                    .add_subsection(StandardSection::Text, b"subsection")
+            } else {
+                self.object.section_id(StandardSection::Text)
+            };
         let offset = self.object.add_symbol_data(symbol, section, &bytes, align);
 
         if !relocs.is_empty() {
@@ -805,7 +837,44 @@ impl ObjectModule {
             functions: self.functions,
             data_objects: self.data_objects,
             section_data: self.section_data,
+            section_comdats: self.section_comdats,
         }
+    }
+
+    /// A section of its own for one function or data object on COFF, as a COMDAT: the only kind
+    /// of section `/OPT:REF` can leave out of the output. (Plain `.text$...` sections are always
+    /// kept, and linked in the order of their suffix.) The COMDAT's leader is a local symbol at
+    /// the start of the section, added after the section symbol as COFF wants; being local it
+    /// selects nothing, so duplicates of global symbols are resolved as before.
+    fn coff_comdat_section(
+        &mut self,
+        name: &[u8],
+        kind: SectionKind,
+        leader_name: Vec<u8>,
+    ) -> SectionId {
+        let section = self.object.add_section(Vec::new(), name.to_vec(), kind);
+        self.object.section_symbol(section);
+        let leader = self.object.add_symbol(Symbol {
+            name: leader_name,
+            value: 0,
+            size: 0,
+            kind: if kind == SectionKind::Text {
+                SymbolKind::Text
+            } else {
+                SymbolKind::Data
+            },
+            scope: SymbolScope::Compilation,
+            weak: false,
+            section: SymbolSection::Section(section),
+            flags: SymbolFlags::None,
+        });
+        let comdat = self.object.add_comdat(Comdat {
+            kind: ComdatKind::NoDuplicates,
+            symbol: leader,
+            sections: vec![section],
+        });
+        self.section_comdats.insert(section, comdat);
+        section
     }
 
     /// Turns `movq sym@GOTPCREL(%rip), %reg` into `leaq sym(%rip), %reg` when `sym` is local to
@@ -1310,6 +1379,7 @@ pub struct ObjectProduct {
     /// [`ObjectProduct::data_symbol`] or [`ObjectProduct::data_symbol_and_offset`].
     pub data_objects: SecondaryMap<DataId, Option<(SymbolId, bool)>>,
     section_data: SecondaryMap<DataId, Option<SectionData>>,
+    section_comdats: HashMap<SectionId, ComdatId>,
 }
 
 impl ObjectProduct {
@@ -1331,6 +1401,13 @@ impl ObjectProduct {
             &self.section_data,
             id,
         )
+    }
+
+    /// The COMDAT of a section of its own for one function or data object on COFF (see
+    /// [`ObjectBuilder::per_function_section`]), for the sections that belong to it, such as its
+    /// unwind information: add them to the COMDAT's sections.
+    pub fn section_comdat(&self, section: SectionId) -> Option<ComdatId> {
+        self.section_comdats.get(&section).copied()
     }
 
     /// Return the symbol to relocate against for the given data object, and the offset to add:
