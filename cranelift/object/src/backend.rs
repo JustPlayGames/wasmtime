@@ -867,8 +867,6 @@ impl ObjectModule {
                 encoding: RelocationEncoding::X86Branch,
                 size: 32,
             },
-            // TODO: Get Cranelift to tell us when we can use
-            // R_X86_64_GOTPCRELX/R_X86_64_REX_GOTPCRELX.
             Reloc::X86CallPLTRel4 => RelocationFlags::Generic {
                 kind: RelocationKind::PltRelative,
                 encoding: RelocationEncoding::X86Branch,
@@ -879,6 +877,18 @@ impl ObjectModule {
                 encoding: RelocationEncoding::Generic,
                 size: 32,
             },
+            // The x64 backend only emits this relocation for `movq sym@GOTPCREL(%rip), %reg`
+            // (`LoadExtName` under `is_pic`), so on ELF it can be `R_X86_64_REX_GOTPCRELX`: the
+            // linker may then turn the load into `leaq sym(%rip), %reg` when the symbol is
+            // defined in the output, and leave out its GOT entry.
+            Reloc::X86GOTPCRel4
+                if self.object.format() == object::BinaryFormat::Elf
+                    && self.isa.triple().architecture == target_lexicon::Architecture::X86_64 =>
+            {
+                RelocationFlags::Elf {
+                    r_type: object::elf::R_X86_64_REX_GOTPCRELX,
+                }
+            }
             Reloc::X86GOTPCRel4 => RelocationFlags::Generic {
                 kind: RelocationKind::GotRelative,
                 encoding: RelocationEncoding::Generic,
