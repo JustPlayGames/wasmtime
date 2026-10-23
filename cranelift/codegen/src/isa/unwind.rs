@@ -178,6 +178,19 @@ pub enum UnwindInst {
         /// the clobber area.
         offset_downward_to_clobbers: u32,
     },
+    /// The stack pointer has just been adjusted to allocate a frame that has
+    /// no frame pointer: from here on the frame is anchored on SP. This takes
+    /// the place of `PushFrameRegs` and `DefineNewFrame`, and `SaveReg`
+    /// offsets are taken from the clobber area found
+    /// `offset_upward_to_clobbers` above SP.
+    DefineFramelessFrame {
+        /// The offset from the current SP upward to the value of SP at the
+        /// callsite that invoked us.
+        offset_upward_to_caller_sp: u32,
+        /// The offset from the current SP upward to the start of the clobber
+        /// area.
+        offset_upward_to_clobbers: u32,
+    },
     /// The stack pointer was adjusted to allocate the stack.
     StackAlloc {
         /// Size to allocate.

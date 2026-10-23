@@ -583,6 +583,10 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         let r_rbp = Gpr::RBP;
         let w_rbp = Writable::from_reg(r_rbp);
         let mut insts = SmallVec::new();
+        if frame_layout.frameless {
+            // The return address is the whole setup area.
+            return insts;
+        }
         // `push %rbp`
         // RSP before the call will be 0 % 16.  So here, it is 8 % 16.
         insts.push(Inst::External {
@@ -610,12 +614,15 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         _call_conv: isa::CallConv,
         _flags: &settings::Flags,
         _isa_flags: &x64_settings::Flags,
-        _frame_layout: &FrameLayout,
+        frame_layout: &FrameLayout,
     ) -> SmallInstVec<Self::I> {
         let rbp = Gpr::RBP;
         let rsp = Gpr::RSP;
 
         let mut insts = SmallVec::new();
+        if frame_layout.frameless {
+            return insts;
+        }
         // `mov %rbp, %rsp`
         insts.push(Inst::External {
             inst: asm::inst::movq_mr::new(Writable::from_reg(rsp), rbp).into(),
@@ -698,6 +705,37 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         }
     }
 
+    fn omit_frame_pointer(
+        call_conv: isa::CallConv,
+        _flags: &settings::Flags,
+        frame_layout: &mut FrameLayout,
+    ) -> bool {
+        // Only System V frames are described by DWARF CFI that can be anchored
+        // on RSP; stack arguments are addressed from RBP.
+        if !matches!(call_conv, CallConv::SystemV | CallConv::Fast)
+            || frame_layout.incoming_args_size != 0
+            || frame_layout.tail_args_size != 0
+        {
+            return false;
+        }
+        let stack_size = frame_layout.fixed_frame_storage_size
+            + frame_layout.clobber_size
+            + frame_layout.outgoing_args_size;
+        if stack_size % 16 != 0 {
+            return false;
+        }
+        // RSP is 8 below a 16-byte boundary on entry (the pushed return
+        // address). The pushed RBP used to realign it; without it, 8 bytes of
+        // padding at the top of the clobber area do, whenever the function
+        // allocates stack or calls.
+        if stack_size > 0 || frame_layout.function_calls != FunctionCalls::None {
+            frame_layout.clobber_size += 8;
+        }
+        frame_layout.setup_area_size = 8;
+        frame_layout.frameless = true;
+        true
+    }
+
     fn gen_clobber_save(
         _call_conv: isa::CallConv,
         flags: &settings::Flags,
@@ -716,7 +754,7 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         // until both have been moved, and then points at the new copies. In both
         // cases the caller's frame is `setup_area_size` above RBP, and the
         // clobbers are just below RBP.
-        if flags.unwind_info() && frame_layout.setup_area_size > 0 {
+        if flags.unwind_info() && frame_layout.setup_area_size > 0 && !frame_layout.frameless {
             insts.push(Inst::Unwind {
                 inst: UnwindInst::DefineNewFrame {
                     offset_downward_to_clobbers: frame_layout.clobber_size,
@@ -773,6 +811,19 @@ impl ABIMachineSpec for X64ABIMachineSpec {
             let stack_size = i32::try_from(stack_size)
                 .expect("`stack_size` is too large to fit in a 32-bit immediate");
             insts.push(Inst::subq_mi(rsp, stack_size));
+
+            // Without a frame pointer the frame is anchored on RSP, so the
+            // unwinder learns about the frame only now.
+            if flags.unwind_info() && frame_layout.frameless {
+                insts.push(Inst::Unwind {
+                    inst: UnwindInst::DefineFramelessFrame {
+                        offset_upward_to_caller_sp: stack_size as u32
+                            + frame_layout.setup_area_size,
+                        offset_upward_to_clobbers: frame_layout.fixed_frame_storage_size
+                            + frame_layout.outgoing_args_size,
+                    },
+                });
+            }
         }
 
         // Store each clobbered register in order at offsets from RSP,
@@ -1022,6 +1073,7 @@ impl ABIMachineSpec for X64ABIMachineSpec {
             outgoing_args_size,
             clobbered_callee_saves: regs,
             function_calls,
+            frameless: false,
         }
     }
 
@@ -1420,6 +1472,7 @@ mod tests {
             outgoing_args_size: 0,
             clobbered_callee_saves: Vec::new(),
             function_calls: crate::machinst::FunctionCalls::None,
+            frameless: false,
         }
     }
 

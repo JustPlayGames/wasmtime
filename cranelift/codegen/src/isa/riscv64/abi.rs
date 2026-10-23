@@ -694,6 +694,7 @@ impl ABIMachineSpec for Riscv64MachineDeps {
             outgoing_args_size,
             clobbered_callee_saves: regs,
             function_calls,
+            frameless: false,
         }
     }
 

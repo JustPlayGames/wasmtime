@@ -225,6 +225,19 @@ pub(crate) fn create_unwind_info_from_insts<MR: RegisterMapper<Reg>>(
                 // express clobber offsets later in terms of CFA.
                 clobber_offset_to_cfa = offset_upward_to_caller_sp + offset_downward_to_clobbers;
             }
+            &UnwindInst::DefineFramelessFrame {
+                offset_upward_to_caller_sp,
+                offset_upward_to_clobbers,
+            } => {
+                // The CFA stays defined in terms of SP (as on entry), now
+                // further up.
+                instructions.push((
+                    instruction_offset,
+                    CallFrameInstruction::CfaOffset(offset_upward_to_caller_sp as i32),
+                ));
+                cfa_offset = offset_upward_to_caller_sp;
+                clobber_offset_to_cfa = offset_upward_to_caller_sp - offset_upward_to_clobbers;
+            }
             &UnwindInst::StackAlloc { size } => {
                 // If we do not use a frame pointer, we need to update the
                 // CFA offset whenever the stack pointer changes.

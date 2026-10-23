@@ -509,6 +509,19 @@ pub trait ABIMachineSpec {
         outgoing_args_size: u32,
     ) -> FrameLayout;
 
+    /// Turns a frame layout from `compute_frame_layout` into one without a
+    /// frame pointer, if the backend supports that for this function, and
+    /// returns whether it did. Called only when frame pointers need not be
+    /// preserved and the function does not read the frame pointer or its
+    /// return address, switch stacks or make tail calls.
+    fn omit_frame_pointer(
+        _call_conv: isa::CallConv,
+        _flags: &settings::Flags,
+        _frame_layout: &mut FrameLayout,
+    ) -> bool {
+        false
+    }
+
     /// Defaults to a conservative 1GiB
     /// across all backends.
     fn maximum_frame_size() -> u32 {
@@ -1118,6 +1131,11 @@ pub struct FrameLayout {
 
     /// The function's call pattern classification.
     pub function_calls: FunctionCalls,
+
+    /// The frame has no frame pointer: the setup area holds only what the
+    /// call itself pushed (the return address), and the stack pointer is the
+    /// only base of the frame. Set by [`ABIMachineSpec::omit_frame_pointer`].
+    pub frameless: bool,
 }
 
 impl FrameLayout {
@@ -1208,6 +1226,9 @@ pub struct Callee<M: ABIMachineSpec> {
     /// manually register-allocated and carefully only use caller-saved
     /// registers and keep nothing live after this sequence of instructions.
     stack_limit: Option<(Reg, SmallInstVec<M::I>)>,
+    /// Whether the function's code relies on a frame pointer (it reads the
+    /// frame pointer or return address, switches stacks or makes tail calls).
+    needs_frame_pointer: bool,
 
     /// Whether the target is Windows (see `gen_inline_probestack`).
     windows: bool,
@@ -1367,6 +1388,19 @@ impl<M: ABIMachineSpec> Callee<M> {
 
         let tail_args_size = sigs[sig].sized_stack_arg_space;
 
+        let needs_frame_pointer = f.layout.blocks().any(|block| {
+            f.layout.block_insts(block).any(|inst| {
+                matches!(
+                    f.dfg.insts[inst].opcode(),
+                    ir::Opcode::GetFramePointer
+                        | ir::Opcode::GetReturnAddress
+                        | ir::Opcode::StackSwitch
+                        | ir::Opcode::ReturnCall
+                        | ir::Opcode::ReturnCallIndirect
+                )
+            })
+        });
+
         Ok(Self {
             ir_sig: ensure_struct_return_ptr_is_returned(&f.signature),
             sig,
@@ -1384,6 +1418,7 @@ impl<M: ABIMachineSpec> Callee<M> {
             flags,
             isa_flags: isa_flags.clone(),
             stack_limit,
+            needs_frame_pointer,
             windows: isa.triple().operating_system == target_lexicon::OperatingSystem::Windows,
             _mach: PhantomData,
         })
@@ -2313,7 +2348,7 @@ impl<M: ABIMachineSpec> Callee<M> {
             // Align the stack.
             .and_then(|size| checked_round_up(size, mask))
             .ok_or(CodegenError::ImplLimitExceeded)?;
-        let frame_layout = M::compute_frame_layout(
+        let mut frame_layout = M::compute_frame_layout(
             self.call_conv,
             &self.flags,
             self.signature(),
@@ -2325,6 +2360,15 @@ impl<M: ABIMachineSpec> Callee<M> {
             total_stacksize,
             self.outgoing_args_size,
         );
+        if self.flags.omit_frame_pointers()
+            && !self.flags.preserve_frame_pointers()
+            && !self.needs_frame_pointer
+            && self.dynamic_stackslots.is_empty()
+            && self.stack_limit.is_none()
+            && !self.windows
+        {
+            M::omit_frame_pointer(self.call_conv, &self.flags, &mut frame_layout);
+        }
 
         if Self::frame_layout_exceeds_limit(&frame_layout, M::maximum_frame_size()) {
             return Err(CodegenError::ImplLimitExceeded);

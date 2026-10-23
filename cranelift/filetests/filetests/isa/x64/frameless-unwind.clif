@@ -1,0 +1,43 @@
+; System V CFI of frames without a frame pointer (`omit_frame_pointers`): the
+; CFA stays defined from RSP, its offset grows by the frame allocated, and
+; callee-saved registers are found from it.
+test unwind
+set unwind_info=true
+set omit_frame_pointers=true
+target x86_64-unknown-linux-gnu
+
+function %f(i64, i64) -> i64 {
+    fn0 = %g() -> i64
+block0(v0: i64, v1: i64):
+    v2 = iadd v0, v1
+    v3 = imul v0, v1
+    v4 = isub v0, v1
+    v5 = call fn0()
+    v6 = iadd v2, v3
+    v7 = iadd v6, v4
+    v8 = iadd v7, v5
+    v9 = iadd v8, v0
+    v10 = iadd v9, v1
+    return v10
+}
+
+; The frame is 56 bytes: five saved registers (40 bytes, rounded up to 48) and
+; 8 bytes of padding; no stack slots.
+; check: 0x00000018: FDE
+; nextln:         length: 0x0000002c
+; nextln:    CIE_pointer: 0x00000000
+; nextln:     start_addr: 0x0000000000000000
+; nextln:     range_size: 0x0000000000000072 (end_addr = 0x0000000000000072)
+; nextln:   Instructions:
+; nextln:                 DW_CFA_advance_loc (4)
+; nextln:                 DW_CFA_def_cfa_offset (64)
+; nextln:                 DW_CFA_advance_loc (4)
+; nextln:                 DW_CFA_offset (r3, 8)
+; nextln:                 DW_CFA_advance_loc (5)
+; nextln:                 DW_CFA_offset (r12, 7)
+; nextln:                 DW_CFA_advance_loc (5)
+; nextln:                 DW_CFA_offset (r13, 6)
+; nextln:                 DW_CFA_advance_loc (5)
+; nextln:                 DW_CFA_offset (r14, 5)
+; nextln:                 DW_CFA_advance_loc (5)
+; nextln:                 DW_CFA_offset (r15, 4)

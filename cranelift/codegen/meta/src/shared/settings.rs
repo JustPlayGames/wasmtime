@@ -223,6 +223,20 @@ pub(crate) fn define() -> SettingGroup {
     );
 
     settings.add_bool(
+        "omit_frame_pointers",
+        "Omit frame pointers where the code allows",
+        r#"
+            Let functions run without a frame pointer when `preserve_frame_pointers`
+            is off and nothing in the function needs one, as compilers do when
+            frame pointers may be omitted: the frame is then anchored on the stack
+            pointer, and unwind information describes it from there. Saves the
+            frame setup and teardown of every call. Currently used by x64 System V
+            functions without stack arguments.
+        "#,
+        false,
+    );
+
+    settings.add_bool(
         "preserve_frame_pointers",
         "Preserve frame pointers",
         r#"

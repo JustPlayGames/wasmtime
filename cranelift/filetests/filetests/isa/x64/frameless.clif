@@ -1,0 +1,134 @@
+; With `omit_frame_pointers`, System V functions without stack arguments run
+; without a frame pointer: no `push rbp; mov rbp, rsp`, the frame (and its
+; 8 bytes of alignment padding when it allocates stack or calls) comes from
+; `sub rsp`, and the CFI describes the CFA from RSP.
+test compile precise-output
+set unwind_info=false
+set omit_frame_pointers=true
+target x86_64
+
+; A leaf without stack: no frame at all.
+function %leaf(i64, i64) -> i64 {
+block0(v0: i64, v1: i64):
+    v2 = iadd v0, v1
+    return v2
+}
+
+; VCode:
+; block0:
+;   leaq (%rdi, %rsi), %rax
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   leaq (%rdi, %rsi), %rax
+;   retq
+
+function %calls(i64) -> i64 {
+    fn0 = %g(i64) -> i64
+block0(v0: i64):
+    v1 = call fn0(v0)
+    v2 = iadd v1, v0
+    return v2
+}
+
+; VCode:
+;   subq $0x18, %rsp
+;   movq %r12, (%rsp)
+; block0:
+;   load_ext_name %g+0, %rsi
+;   movq %rdi, %r12
+;   call    *%rsi
+;   leaq (%rax, %r12), %rax
+;   movq (%rsp), %r12
+;   addq $0x18, %rsp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   subq $0x18, %rsp
+;   movq %r12, (%rsp)
+; block1: ; offset 0x8
+;   movabsq $0, %rsi ; reloc_external Abs8 %g 0
+;   movq %rdi, %r12
+;   callq *%rsi
+;   addq %r12, %rax
+;   movq (%rsp), %r12
+;   addq $0x18, %rsp
+;   retq
+
+function %slots(i64) -> i64 {
+    ss0 = explicit_slot 24
+    fn0 = %g(i64) -> i64
+block0(v0: i64):
+    v5 = stack_addr.i64 ss0
+    store v0, v5
+    v1 = call fn0(v0)
+    v2 = load.i64 v5
+    v3 = iadd v1, v2
+    v4 = iadd v3, v0
+    return v4
+}
+
+; VCode:
+;   subq $0x38, %rsp
+;   movq %r12, 0x20(%rsp)
+;   movq %r13, 0x28(%rsp)
+; block0:
+;   leaq <offset:1>+(%rsp), %r13
+;   movq %rdi, <offset:1>+(%rsp)
+;   movq %rdi, %r12
+;   load_ext_name %g+0, %r8
+;   call    *%r8
+;   addq (%r13), %rax
+;   leaq (%rax, %r12), %rax
+;   movq 0x20(%rsp), %r12
+;   movq 0x28(%rsp), %r13
+;   addq $0x38, %rsp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   subq $0x38, %rsp
+;   movq %r12, 0x20(%rsp)
+;   movq %r13, 0x28(%rsp)
+; block1: ; offset 0xe
+;   leaq (%rsp), %r13
+;   movq %rdi, (%rsp)
+;   movq %rdi, %r12
+;   movabsq $0, %r8 ; reloc_external Abs8 %g 0
+;   callq *%r8
+;   addq (%r13), %rax ; trap: heap_oob
+;   addq %r12, %rax
+;   movq 0x20(%rsp), %r12
+;   movq 0x28(%rsp), %r13
+;   addq $0x38, %rsp
+;   retq
+
+function %stack_args(i64, i64, i64, i64, i64, i64, i64) -> i64 {
+block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64, v5: i64, v6: i64):
+    v7 = iadd v0, v6
+    return v7
+}
+
+; VCode:
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block0:
+;   movq <offset:0>+-0x10(%rbp), %rdx
+;   leaq (%rdi, %rdx), %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+;
+; Disassembled:
+; block0: ; offset 0x0
+;   pushq %rbp
+;   movq %rsp, %rbp
+; block1: ; offset 0x4
+;   movq 0x10(%rbp), %rdx
+;   leaq (%rdi, %rdx), %rax
+;   movq %rbp, %rsp
+;   popq %rbp
+;   retq
+

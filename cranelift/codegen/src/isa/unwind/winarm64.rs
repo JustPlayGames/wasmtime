@@ -300,6 +300,9 @@ pub(crate) fn create_unwind_info_from_insts(
                     }
                 }
             }
+            &UnwindInst::DefineFramelessFrame { .. } => {
+                unreachable!("frames without a frame pointer are only used on x64");
+            }
             &UnwindInst::RegStackOffset { .. } => {
                 unreachable!("only supported with DWARF");
             }
