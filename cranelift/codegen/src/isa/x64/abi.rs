@@ -714,7 +714,7 @@ impl ABIMachineSpec for X64ABIMachineSpec {
 
     fn omit_frame_pointer(
         call_conv: isa::CallConv,
-        _flags: &settings::Flags,
+        flags: &settings::Flags,
         frame_layout: &mut FrameLayout,
     ) -> bool {
         // Only System V frames are described by DWARF CFI that can be anchored
@@ -729,6 +729,12 @@ impl ABIMachineSpec for X64ABIMachineSpec {
             + frame_layout.clobber_size
             + frame_layout.outgoing_args_size;
         if stack_size % 16 != 0 {
+            return false;
+        }
+        // Stack probes move RSP before the unwind information describes the
+        // frame (see `gen_inline_probestack`): keep the frame pointer in frames
+        // large enough to be probed.
+        if flags.enable_probestack() && stack_size + 16 >= 1 << flags.probestack_size_log2() {
             return false;
         }
         // RSP is 8 below a 16-byte boundary on entry (the pushed return
