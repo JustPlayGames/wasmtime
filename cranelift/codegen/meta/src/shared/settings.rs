@@ -231,7 +231,7 @@ pub(crate) fn define() -> SettingGroup {
             frame pointers may be omitted: the frame is then anchored on the stack
             pointer, and unwind information describes it from there. Saves the
             frame setup and teardown of every call. Currently used by x64 System V
-            functions without stack arguments.
+            and Windows x64 functions without stack arguments.
         "#,
         false,
     );

@@ -1,0 +1,100 @@
+; Windows x64 functions without a frame pointer: RSP is the frame base of the
+; unwind codes. One allocation below the return address (the clobbers'
+; padding included), then each callee-saved register at its offset above RSP,
+; and no frame register.
+test unwind
+set unwind_info=true
+set omit_frame_pointers=true
+target x86_64-pc-windows-msvc
+
+function %f(i64, i64) -> i64 windows_fastcall {
+    fn0 = %g() windows_fastcall
+block0(v0: i64, v1: i64):
+    v2 = iadd v0, v1
+    v3 = imul v0, v1
+    v4 = isub v0, v1
+    v5 = f64const 0x1.0
+    call fn0()
+    v6 = iadd v2, v3
+    v7 = iadd v6, v4
+    v8 = fcvt_to_sint.i64 v5
+    v9 = iadd v7, v8
+    v10 = iadd v9, v0
+    v11 = iadd v10, v1
+    return v11
+}
+; check:               version: 1
+; nextln:                 flags: 0
+; nextln:         prologue size: 35
+; nextln:        frame register: 0
+; nextln: frame register offset: 0
+; nextln:          unwind codes: 7
+; check:                offset: 4
+; nextln:                    op: SmallStackAlloc
+; nextln:                  info: 12
+; check:                offset: 9
+; nextln:                    op: SaveNonvolatileRegister
+; nextln:                  info: 3
+; nextln:                 value: 4 (u16)
+; check:                offset: 14
+; nextln:                    op: SaveNonvolatileRegister
+; nextln:                  info: 6
+; nextln:                 value: 5 (u16)
+; check:                offset: 19
+; nextln:                    op: SaveNonvolatileRegister
+; nextln:                  info: 7
+; nextln:                 value: 6 (u16)
+; check:                offset: 24
+; nextln:                    op: SaveNonvolatileRegister
+; nextln:                  info: 12
+; nextln:                 value: 7 (u16)
+; check:                offset: 29
+; nextln:                    op: SaveNonvolatileRegister
+; nextln:                  info: 13
+; nextln:                 value: 8 (u16)
+; check:                offset: 35
+; nextln:                    op: SaveXmm128
+; nextln:                  info: 6
+; nextln:                 value: 5 (u16)
+
+; A leaf without stack has no unwind codes.
+function %leaf(i64, i64) -> i64 windows_fastcall {
+block0(v0: i64, v1: i64):
+    v2 = iadd v0, v1
+    return v2
+}
+
+; check:               version: 1
+; nextln:                 flags: 0
+; nextln:         prologue size: 0
+; nextln:        frame register: 0
+; nextln: frame register offset: 0
+; nextln:          unwind codes: 0
+
+; Stack arguments are addressed from RBP: the frame pointer stays.
+function %stack_args(i64, i64, i64, i64, i64) -> i64 windows_fastcall {
+    fn0 = %g() windows_fastcall
+block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):
+    call fn0()
+    return v4
+}
+
+; check:               version: 1
+; nextln:                 flags: 0
+; nextln:         prologue size: 13
+; nextln:        frame register: 5
+; nextln: frame register offset: 1
+; nextln:          unwind codes: 4
+; check:                offset: 1
+; nextln:                    op: PushNonvolatileRegister
+; nextln:                  info: 5
+; check:                offset: 4
+; nextln:                    op: SmallStackAlloc
+; nextln:                  info: 1
+; check:                offset: 4
+; nextln:                    op: SetFramePointer
+; nextln:                  info: 0
+; check:                offset: 13
+; nextln:                    op: SaveNonvolatileRegister
+; nextln:                  info: 6
+; nextln:                 value: 0 (u16)

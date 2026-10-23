@@ -261,8 +261,19 @@ pub(crate) fn create_unwind_info_from_insts<MR: RegisterMapper<crate::machinst::
 ) -> CodegenResult<UnwindInfo> {
     let mut unwind_codes = vec![];
     let mut frame_register_offset = 0;
+    // Where the clobber area starts above RSP in a frame without a frame
+    // pointer: `UWOP_SAVE_NONVOL` offsets are then relative to RSP after the
+    // prologue's allocation.
+    let mut frameless_clobber_base = None;
     let mut max_unwind_offset = 0;
     for &(instruction_offset, ref inst) in insts {
+        // Windows finds epilogues by their code, not by unwind codes.
+        if matches!(
+            inst,
+            UnwindInst::FramelessFrameFreed | UnwindInst::FramelessReturned
+        ) {
+            continue;
+        }
         let instruction_offset = ensure_unwind_offset(instruction_offset)?;
         match inst {
             &UnwindInst::PushFrameRegs { .. } => {
@@ -305,22 +316,29 @@ pub(crate) fn create_unwind_info_from_insts<MR: RegisterMapper<crate::machinst::
                     unwind_codes.push(UnwindCode::SaveReg {
                         instruction_offset,
                         reg,
-                        stack_offset: clobber_offset,
+                        stack_offset: clobber_offset + frameless_clobber_base.unwrap_or(0),
                     });
                 }
                 MappedRegister::Xmm(reg) => {
                     unwind_codes.push(UnwindCode::SaveXmm {
                         instruction_offset,
                         reg,
-                        stack_offset: clobber_offset,
+                        stack_offset: clobber_offset + frameless_clobber_base.unwrap_or(0),
                     });
                 }
             },
-            &UnwindInst::DefineFramelessFrame { .. }
-            | &UnwindInst::FramelessFrameFreed
-            | &UnwindInst::FramelessReturned => {
-                unreachable!("frames without a frame pointer are only used with DWARF");
+            &UnwindInst::DefineFramelessFrame {
+                offset_upward_to_caller_sp,
+                offset_upward_to_clobbers,
+            } => {
+                // Everything below the return address is one allocation.
+                unwind_codes.push(UnwindCode::StackAlloc {
+                    instruction_offset,
+                    size: offset_upward_to_caller_sp - 8,
+                });
+                frameless_clobber_base = Some(offset_upward_to_clobbers);
             }
+            &UnwindInst::FramelessFrameFreed | &UnwindInst::FramelessReturned => unreachable!(),
             &UnwindInst::RegStackOffset { .. } => {
                 unreachable!("only supported with DWARF");
             }
@@ -334,7 +352,11 @@ pub(crate) fn create_unwind_info_from_insts<MR: RegisterMapper<crate::machinst::
     Ok(UnwindInfo {
         flags: 0,
         prologue_size: max_unwind_offset,
-        frame_register: Some(UNWIND_RBP_REG),
+        frame_register: if frameless_clobber_base.is_some() || unwind_codes.is_empty() {
+            None
+        } else {
+            Some(UNWIND_RBP_REG)
+        },
         frame_register_offset,
         unwind_codes,
     })
