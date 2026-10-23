@@ -51,7 +51,7 @@ block0:
 ;   pushq %rbp
 ;   movq %rsp, %rbp
 ; block1: ; offset 0x4
-;   movq (%rip), %rax ; reloc_external GOTPCRel4 %func0 -4
+;   leaq (%rip), %rax ; reloc_external PCRel4 %func0 -4
 ;   movq %rbp, %rsp
 ;   popq %rbp
 ;   retq
@@ -161,7 +161,7 @@ block0:
 ;   pushq %rbp
 ;   movq %rsp, %rbp
 ; block1: ; offset 0x4
-;   movq (%rip), %rax ; reloc_external GOTPCRel4 %global0 -4
+;   leaq (%rip), %rax ; reloc_external PCRel4 %global0 -4
 ;   movq %rbp, %rsp
 ;   popq %rbp
 ;   retq
@@ -188,8 +188,7 @@ block0:
 ;   pushq %rbp
 ;   movq %rsp, %rbp
 ; block1: ; offset 0x4
-;   movq (%rip), %rax ; reloc_external GOTPCRel4 %global0 -4
-;   addq $0x7b, %rax
+;   leaq (%rip), %rax ; reloc_external PCRel4 %global0 119
 ;   movq %rbp, %rsp
 ;   popq %rbp
 ;   retq
@@ -216,8 +215,7 @@ block0:
 ;   pushq %rbp
 ;   movq %rsp, %rbp
 ; block1: ; offset 0x4
-;   movq (%rip), %rax ; reloc_external GOTPCRel4 %global0 -4
-;   addq $-0x7b, %rax
+;   leaq (%rip), %rax ; reloc_external PCRel4 %global0 -127
 ;   movq %rbp, %rsp
 ;   popq %rbp
 ;   retq

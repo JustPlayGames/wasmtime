@@ -1475,7 +1475,23 @@ pub(crate) fn emit(
             let riprel = asm::Amode::RipRelative {
                 target: asm::DeferredTarget::None,
             };
-            if info.flags.is_pic() {
+            if distance == &RelocDistance::Near {
+                // If we know the distance to the name is within 2GB (e.g., a
+                // module-local function), we can generate a RIP-relative
+                // address, with a relocation. That is position-independent
+                // as well, so this also applies under `is_pic`: no GOT entry
+                // (and no GOT load) is needed.
+                //
+                // Note that this is `X86PCRel4` rather than `X86CallPCRel4`:
+                // the latter is reserved for the displacement of `call`/`jmp`
+                // instructions, which relocation consumers may redirect through
+                // a veneer if the target turns out to be out of range. This `lea`
+                // computes the address of the symbol itself, so no such
+                // redirection is possible.
+                asm::inst::leaq_rm::new(*dst, riprel).emit(sink, info, state);
+                let cur = sink.cur_offset();
+                sink.add_reloc_at_offset(cur - 4, Reloc::X86PCRel4, name, *offset - 4);
+            } else if info.flags.is_pic() {
                 // Generates: movq symbol@GOTPCREL(%rip), %dst
                 asm::inst::movq_rm::new(*dst, riprel).emit(sink, info, state);
                 let cur = sink.cur_offset();
@@ -1489,20 +1505,6 @@ pub(crate) fn emit(
                     asm::inst::addq_mi_sxl::new(PairedGpr::from(*dst), offset)
                         .emit(sink, info, state);
                 }
-            } else if distance == &RelocDistance::Near {
-                // If we know the distance to the name is within 2GB (e.g., a
-                // module-local function), we can generate a RIP-relative
-                // address, with a relocation.
-                //
-                // Note that this is `X86PCRel4` rather than `X86CallPCRel4`:
-                // the latter is reserved for the displacement of `call`/`jmp`
-                // instructions, which relocation consumers may redirect through
-                // a veneer if the target turns out to be out of range. This `lea`
-                // computes the address of the symbol itself, so no such
-                // redirection is possible.
-                asm::inst::leaq_rm::new(*dst, riprel).emit(sink, info, state);
-                let cur = sink.cur_offset();
-                sink.add_reloc_at_offset(cur - 4, Reloc::X86PCRel4, name, *offset - 4);
             } else {
                 // The full address can be encoded in the register, with a
                 // relocation.
