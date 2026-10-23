@@ -51,6 +51,7 @@ block0(v0: i8):
 ;   movzbq %cl, %rcx
 ;   load_ext_name userextname0+0, %r8
 ;   call    *%r8
+;   nop
 ;   addq $0x20, %rsp
 ;   movq %rbp, %rsp
 ;   popq %rbp
@@ -65,6 +66,7 @@ block0(v0: i8):
 ;   movzbq %cl, %rcx
 ;   movabsq $0, %r8 ; reloc_external Abs8 u0:0 0
 ;   callq *%r8
+;   nop
 ;   addq $0x20, %rsp
 ;   movq %rbp, %rsp
 ;   popq %rbp

@@ -1778,6 +1778,11 @@ impl<I: VCodeInst> MachBuffer<I> {
         });
     }
 
+    /// The return address of the last call emitted so far.
+    pub(crate) fn last_call_ret_addr(&self) -> Option<CodeOffset> {
+        self.inner.call_sites.last().map(|call_site| call_site.ret_addr)
+    }
+
     /// Add a call-site record at the current offset.
     pub fn add_call_site(&mut self) {
         self.add_try_call_site(None, core::iter::empty());
