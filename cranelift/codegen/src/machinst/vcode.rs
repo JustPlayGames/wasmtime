@@ -1834,11 +1834,9 @@ impl<I: VCodeInst> VRegAllocator<I> {
             // for a `Value`.
             _ => panic!("Value must reside in 1 or 2 registers"),
         };
-        for (&reg_ty, &reg) in tys.iter().zip(regs.regs().iter()) {
-            let vreg = reg.to_virtual_reg().unwrap();
-            debug_assert_eq!(self.vreg_types.len(), vreg.index());
-            self.vreg_types.push(reg_ty);
-        }
+        // The new vregs are numbered `v..`, in order: their types follow.
+        debug_assert_eq!(tys.len(), regs.len());
+        self.vreg_types.extend_from_slice(tys);
 
         Ok(regs)
     }
