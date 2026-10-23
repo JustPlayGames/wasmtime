@@ -58,7 +58,11 @@ pub fn compile<B: LowerBackend + TargetIsa>(
             options.validate_ssa = true;
         }
 
-        options.algorithm = match b.flags().regalloc_algorithm() {
+        options.algorithm = match f
+            .params
+            .regalloc_algorithm()
+            .unwrap_or_else(|| b.flags().regalloc_algorithm())
+        {
             RegallocAlgorithm::Backtracking => Algorithm::Ion,
             RegallocAlgorithm::SinglePass => Algorithm::Fastalloc,
         };
@@ -92,4 +96,80 @@ pub fn compile<B: LowerBackend + TargetIsa>(
     }
 
     Ok(vcode)
+}
+
+#[cfg(all(test, feature = "x86"))]
+mod tests {
+    use crate::Context;
+    use crate::cursor::{Cursor, FuncCursor};
+    use crate::ir::{
+        AbiParam, ExtFuncData, ExternalName, Function, InstBuilder, Signature, UserExternalName,
+        UserFuncName, types,
+    };
+    use crate::isa::{CallConv, lookup};
+    use crate::settings::{Configurable, Flags, RegallocAlgorithm, builder};
+    use alloc::vec::Vec;
+    use target_lexicon::triple;
+
+    /// `f(a, b) = { let v = a + b; g(); v + a }`: values live across a call, which the two
+    /// allocators handle differently.
+    fn function() -> Function {
+        let mut sig = Signature::new(CallConv::SystemV);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut func = Function::with_name_signature(UserFuncName::default(), sig);
+        let callee_sig = func.import_signature(Signature::new(CallConv::SystemV));
+        let name = func.declare_imported_user_function(UserExternalName::new(0, 1));
+        let callee = func.import_function(ExtFuncData {
+            name: ExternalName::user(name),
+            signature: callee_sig,
+            colocated: false,
+            patchable: false,
+        });
+        let block0 = func.dfg.make_block();
+        let a = func.dfg.append_block_param(block0, types::I64);
+        let b = func.dfg.append_block_param(block0, types::I64);
+        let mut pos = FuncCursor::new(&mut func);
+        pos.insert_block(block0);
+        let v = pos.ins().iadd(a, b);
+        pos.ins().call(callee, &[]);
+        let r = pos.ins().iadd(v, a);
+        pos.ins().return_(&[r]);
+        func
+    }
+
+    fn compile(isa_algorithm: &str, func_algorithm: Option<RegallocAlgorithm>) -> Vec<u8> {
+        let mut flags = builder();
+        flags.set("regalloc_algorithm", isa_algorithm).unwrap();
+        let isa = lookup(triple!("x86_64"))
+            .unwrap()
+            .finish(Flags::new(flags))
+            .unwrap();
+        let mut func = function();
+        func.params.set_regalloc_algorithm(func_algorithm);
+        let mut ctx = Context::for_function(func);
+        ctx.compile(&*isa, &mut Default::default())
+            .unwrap()
+            .code_buffer()
+            .to_vec()
+    }
+
+    #[test]
+    fn a_function_chooses_its_register_allocator() {
+        let backtracking = compile("backtracking", None);
+        let single_pass = compile("single_pass", None);
+        assert_ne!(
+            backtracking, single_pass,
+            "the test function should tell the allocators apart"
+        );
+        assert_eq!(
+            compile("backtracking", Some(RegallocAlgorithm::SinglePass)),
+            single_pass
+        );
+        assert_eq!(
+            compile("single_pass", Some(RegallocAlgorithm::Backtracking)),
+            backtracking
+        );
+    }
 }
