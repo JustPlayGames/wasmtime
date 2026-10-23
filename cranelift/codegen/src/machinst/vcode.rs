@@ -1674,11 +1674,13 @@ impl<I: VCodeInst> Debug for VRegAllocator<I> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "VRegAllocator {{")?;
 
-        let mut alias_keys = self.vreg_aliases.keys().cloned().collect::<Vec<_>>();
-        alias_keys.sort_unstable();
-        for key in alias_keys {
-            let dest = self.vreg_aliases.get(&key).unwrap();
-            writeln!(f, "  {:?} := {:?}", Reg::from(key), Reg::from(*dest))?;
+        for (index, &dest) in self.vreg_aliases.iter().enumerate() {
+            if dest == VReg::invalid() {
+                continue;
+            }
+            // An alias joins two vregs of the same class.
+            let key = VReg::new(index, dest.class());
+            writeln!(f, "  {:?} := {:?}", Reg::from(key), Reg::from(dest))?;
         }
 
         writeln!(f, "}}")
@@ -1752,7 +1754,10 @@ pub struct VRegAllocator<I> {
     /// We use these aliases to rename an instruction's expected
     /// result vregs to the returned vregs from lowering, which are
     /// usually freshly-allocated temps.
-    vreg_aliases: FxHashMap<regalloc2::VReg, regalloc2::VReg>,
+    ///
+    /// Indexed by the aliased vreg's index; `VReg::invalid()` marks a vreg
+    /// without an alias. Grown on demand: most vregs have none.
+    vreg_aliases: Vec<regalloc2::VReg>,
 
     /// A deferred error, to be bubbled up to the top level of the
     /// lowering algorithm. We take this approach because we cannot
@@ -1772,7 +1777,7 @@ impl<I: VCodeInst> VRegAllocator<I> {
         vreg_types.resize(first_user_vreg_index(), types::INVALID);
         Self {
             vreg_types,
-            vreg_aliases: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            vreg_aliases: Vec::new(),
             deferred_error: None,
             _inst: core::marker::PhantomData::default(),
         }
@@ -1855,8 +1860,12 @@ impl<I: VCodeInst> VRegAllocator<I> {
         // Disallow cycles (see below).
         assert_ne!(resolved_to, from);
 
-        let old_alias = self.vreg_aliases.insert(from, resolved_to);
-        debug_assert_eq!(old_alias, None);
+        let index = from.vreg();
+        if index >= self.vreg_aliases.len() {
+            self.vreg_aliases.resize(index + 1, VReg::invalid());
+        }
+        let old_alias = core::mem::replace(&mut self.vreg_aliases[index], resolved_to);
+        debug_assert_eq!(old_alias, VReg::invalid());
     }
 
     fn resolve_vreg_alias(&self, mut vreg: regalloc2::VReg) -> regalloc2::VReg {
@@ -1869,15 +1878,22 @@ impl<I: VCodeInst> VRegAllocator<I> {
         // phis/blockparams), cycles should not occur as we use
         // aliases to redirect vregs to the temps that actually define
         // them.
-        while let Some(to) = self.vreg_aliases.get(&vreg) {
-            vreg = *to;
+        while let Some(&to) = self.vreg_aliases.get(vreg.vreg()) {
+            if to == VReg::invalid() {
+                break;
+            }
+            vreg = to;
         }
         vreg
     }
 
     #[inline]
     fn debug_assert_no_vreg_aliases(&self, mut list: impl Iterator<Item = VReg>) {
-        debug_assert!(list.all(|vreg| !self.vreg_aliases.contains_key(&vreg)));
+        debug_assert!(list.all(|vreg| {
+            self.vreg_aliases
+                .get(vreg.vreg())
+                .is_none_or(|&to| to == VReg::invalid())
+        }));
     }
 }
 
