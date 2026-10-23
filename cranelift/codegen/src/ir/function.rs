@@ -79,6 +79,12 @@ pub struct FunctionParameters {
 
     /// Inverted mapping of `user_named_funcs`, to deduplicate internally.
     user_ext_name_to_ref: HashMap<UserExternalName, UserExternalNameRef>,
+
+    /// The register allocator for this function, instead of the ISA's `regalloc_algorithm`
+    /// setting. Either allocator produces correct code; this only trades compile time against
+    /// code quality per function (e.g. the single-pass allocator for code that runs once).
+    #[cfg_attr(feature = "enable-serde", serde(skip))]
+    regalloc_algorithm: Option<crate::settings::RegallocAlgorithm>,
 }
 
 impl FunctionParameters {
@@ -88,7 +94,21 @@ impl FunctionParameters {
             base_srcloc: None,
             user_named_funcs: Default::default(),
             user_ext_name_to_ref: Default::default(),
+            regalloc_algorithm: None,
         }
+    }
+
+    /// The register allocator chosen for this function, if it overrides the ISA's setting.
+    pub fn regalloc_algorithm(&self) -> Option<crate::settings::RegallocAlgorithm> {
+        self.regalloc_algorithm
+    }
+
+    /// Chooses the register allocator for this function (`None`: the ISA's setting).
+    pub fn set_regalloc_algorithm(
+        &mut self,
+        algorithm: Option<crate::settings::RegallocAlgorithm>,
+    ) {
+        self.regalloc_algorithm = algorithm;
     }
 
     /// Returns the base `SourceLoc`.
@@ -142,6 +162,7 @@ impl FunctionParameters {
         self.base_srcloc = None;
         self.user_named_funcs.clear();
         self.user_ext_name_to_ref.clear();
+        self.regalloc_algorithm = None;
     }
 }
 
