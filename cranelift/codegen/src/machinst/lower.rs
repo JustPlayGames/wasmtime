@@ -1477,10 +1477,26 @@ fn compute_use_states(
         .flat_map(|block| f.layout.block_insts(block))
     {
         // Iterate over all values used by all instructions, noting an
-        // additional use on each operand.
-        for arg in f.dfg.inst_values(inst) {
+        // additional use on each operand: the values `inst_values`
+        // yields, in its order, without its chained iterators.
+        for &arg in f.dfg.inst_args(inst) {
             debug_assert!(f.dfg.value_is_real(arg));
             mark_use(arg, &mut multiple_stack);
+        }
+        let data = &f.dfg.insts[inst];
+        for dest in data.branch_destination(&f.dfg.jump_tables, &f.dfg.exception_tables) {
+            for arg in dest.args(&f.dfg.value_lists) {
+                if let Some(arg) = arg.as_value() {
+                    debug_assert!(f.dfg.value_is_real(arg));
+                    mark_use(arg, &mut multiple_stack);
+                }
+            }
+        }
+        if let Some(et) = data.exception_table() {
+            for arg in f.dfg.exception_tables[et].contexts() {
+                debug_assert!(f.dfg.value_is_real(arg));
+                mark_use(arg, &mut multiple_stack);
+            }
         }
     }
 
