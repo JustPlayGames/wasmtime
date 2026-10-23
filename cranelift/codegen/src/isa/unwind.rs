@@ -178,6 +178,13 @@ pub enum UnwindInst {
         /// the clobber area.
         offset_downward_to_clobbers: u32,
     },
+    /// The frame-pointer register has just been set to the current stack
+    /// location, right after `PushFrameRegs`; `DefineNewFrame` follows later in
+    /// the prologue. Unwind formats that can anchor the frame on the frame
+    /// pointer from here on (System V CFI) do so, so that code between the two
+    /// that moves SP, such as stack probes, unwinds correctly. Windows unwind
+    /// codes ignore it: there the probes leave SP alone.
+    FramePointerSet,
     /// The stack pointer has just been adjusted to allocate a frame that has
     /// no frame pointer: from here on the frame is anchored on SP. This takes
     /// the place of `PushFrameRegs` and `DefineNewFrame`, and `SaveReg`

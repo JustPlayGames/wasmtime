@@ -27,6 +27,7 @@ function %f0(i64) -> i64 windows_fastcall {
 ;   pushq %rbp
 ;   unwind PushFrameRegs { offset_upward_to_caller_sp: 16 }
 ;   movq %rsp, %rbp
+;   unwind FramePointerSet
 ;   unwind DefineNewFrame { offset_upward_to_caller_sp: 16, offset_downward_to_clobbers: 16 }
 ;   subq $0x30, %rsp
 ;   movq %rsi, 0x20(%rsp)
@@ -104,6 +105,7 @@ function %f1(i64, f64) -> f64 windows_fastcall {
 ;   pushq %rbp
 ;   unwind PushFrameRegs { offset_upward_to_caller_sp: 16 }
 ;   movq %rsp, %rbp
+;   unwind FramePointerSet
 ;   unwind DefineNewFrame { offset_upward_to_caller_sp: 16, offset_downward_to_clobbers: 16 }
 ;   subq $0x30, %rsp
 ;   movdqu %xmm6, 0x20(%rsp)

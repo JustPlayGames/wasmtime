@@ -1,0 +1,63 @@
+; System V CFI of frames covered by inline stack probes: the probes move RSP, so
+; the CFA follows RBP from right after `mov %rsp, %rbp`, before the probes (a
+; stack overflow faults in them, and an unwinder must find the caller there).
+; Frames large enough to be probed keep their frame pointer even when frame
+; pointers may be omitted.
+test unwind
+set unwind_info=true
+set omit_frame_pointers=true
+set enable_probestack=true
+set probestack_strategy=inline
+target x86_64-unknown-linux-gnu
+
+; Two unrolled probes.
+function %unrolled() -> i64 {
+    ss0 = explicit_slot 8192
+block0:
+    v0 = stack_addr.i64 ss0
+    v1 = load.i64 v0
+    return v1
+}
+
+; check: FDE
+; nextln:         length: 0x0000001c
+; nextln:    CIE_pointer: 0x00000000
+; nextln:     start_addr: 0x0000000000000000
+; nextln:     range_size: 0x000000000000003e (end_addr = 0x000000000000003e)
+; nextln:   Instructions:
+; nextln:                 DW_CFA_advance_loc (1)
+; nextln:                 DW_CFA_def_cfa_offset (16)
+; nextln:                 DW_CFA_offset (r6, 2)
+; nextln:                 DW_CFA_advance_loc (3)
+; nextln:                 DW_CFA_def_cfa_register (r6)
+; not: DW_CFA
+
+; The probe loop, with a callee-saved register.
+function %looped(i64) -> i64 {
+    ss0 = explicit_slot 100000
+    fn0 = %g() -> i64
+block0(v0: i64):
+    v1 = stack_addr.i64 ss0
+    store.i64 v0, v1
+    v2 = call fn0()
+    v3 = load.i64 v1
+    v4 = iadd v3, v2
+    v5 = iadd v4, v0
+    return v5
+}
+
+; check: FDE
+; nextln:         length:
+; nextln:    CIE_pointer: 0x00000000
+; nextln:     start_addr: 0x0000000000000000
+; nextln:     range_size:
+; nextln:   Instructions:
+; nextln:                 DW_CFA_advance_loc (1)
+; nextln:                 DW_CFA_def_cfa_offset (16)
+; nextln:                 DW_CFA_offset (r6, 2)
+; nextln:                 DW_CFA_advance_loc (3)
+; nextln:                 DW_CFA_def_cfa_register (r6)
+; nextln:                 DW_CFA_advance_loc (55)
+; nextln:                 DW_CFA_offset (r12, 4)
+; nextln:                 DW_CFA_advance_loc (8)
+; nextln:                 DW_CFA_offset (r13, 3)

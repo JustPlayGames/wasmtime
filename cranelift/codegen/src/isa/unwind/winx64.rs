@@ -267,10 +267,14 @@ pub(crate) fn create_unwind_info_from_insts<MR: RegisterMapper<crate::machinst::
     let mut frameless_clobber_base = None;
     let mut max_unwind_offset = 0;
     for &(instruction_offset, ref inst) in insts {
-        // Windows finds epilogues by their code, not by unwind codes.
+        // Windows finds epilogues by their code, not by unwind codes, and its
+        // stack probes leave RSP alone, so setting the frame pointer early needs
+        // no code of its own (`DefineNewFrame` gives `UWOP_SET_FPREG`).
         if matches!(
             inst,
-            UnwindInst::FramelessFrameFreed | UnwindInst::FramelessReturned
+            UnwindInst::FramelessFrameFreed
+                | UnwindInst::FramelessReturned
+                | UnwindInst::FramePointerSet
         ) {
             continue;
         }
@@ -338,7 +342,9 @@ pub(crate) fn create_unwind_info_from_insts<MR: RegisterMapper<crate::machinst::
                 });
                 frameless_clobber_base = Some(offset_upward_to_clobbers);
             }
-            &UnwindInst::FramelessFrameFreed | &UnwindInst::FramelessReturned => unreachable!(),
+            &UnwindInst::FramelessFrameFreed
+            | &UnwindInst::FramelessReturned
+            | &UnwindInst::FramePointerSet => unreachable!(),
             &UnwindInst::RegStackOffset { .. } => {
                 unreachable!("only supported with DWARF");
             }

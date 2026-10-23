@@ -24,6 +24,7 @@ block0(v0: i64):
 ;   pushq %rbp
 ;   unwind PushFrameRegs { offset_upward_to_caller_sp: 16 }
 ;   movq %rsp, %rbp
+;   unwind FramePointerSet
 ;   unwind DefineNewFrame { offset_upward_to_caller_sp: 16, offset_downward_to_clobbers: 48 }
 ;   subq $0x20, %rsp
 ;   movq 0x20(%rsp), %r11
