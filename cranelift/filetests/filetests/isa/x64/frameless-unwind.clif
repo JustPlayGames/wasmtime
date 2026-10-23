@@ -24,7 +24,7 @@ block0(v0: i64, v1: i64):
 ; The frame is 56 bytes: five saved registers (40 bytes, rounded up to 48) and
 ; 8 bytes of padding; no stack slots.
 ; check: 0x00000018: FDE
-; nextln:         length: 0x0000002c
+; nextln:         length: 0x00000034
 ; nextln:    CIE_pointer: 0x00000000
 ; nextln:     start_addr: 0x0000000000000000
 ; nextln:     range_size: 0x0000000000000072 (end_addr = 0x0000000000000072)
@@ -41,3 +41,38 @@ block0(v0: i64, v1: i64):
 ; nextln:                 DW_CFA_offset (r14, 5)
 ; nextln:                 DW_CFA_advance_loc (5)
 ; nextln:                 DW_CFA_offset (r15, 4)
+; After the epilogue's `add rsp`, the CFA is RSP + 8 until the return.
+; nextln:                 DW_CFA_advance_loc (85)
+; nextln:                 DW_CFA_remember_state
+; nextln:                 DW_CFA_def_cfa_offset (8)
+; nextln:                 DW_CFA_advance_loc (1)
+; nextln:                 DW_CFA_restore_state
+
+; An early return: the code after each epilogue is back in the frame.
+function %g(i64) -> i64 {
+    fn0 = %h() -> i64
+block0(v0: i64):
+    brif v0, block1, block2
+block1:
+    v1 = call fn0()
+    v2 = iadd v1, v0
+    return v2
+block2:
+    v3 = call fn0()
+    return v3
+}
+
+; check: FDE
+; check: DW_CFA_def_cfa_offset (32)
+; nextln:                 DW_CFA_advance_loc (4)
+; nextln:                 DW_CFA_offset (r12, 4)
+; nextln:                 DW_CFA_advance_loc (33)
+; nextln:                 DW_CFA_remember_state
+; nextln:                 DW_CFA_def_cfa_offset (8)
+; nextln:                 DW_CFA_advance_loc (1)
+; nextln:                 DW_CFA_restore_state
+; nextln:                 DW_CFA_advance_loc (27)
+; nextln:                 DW_CFA_remember_state
+; nextln:                 DW_CFA_def_cfa_offset (8)
+; nextln:                 DW_CFA_advance_loc (1)
+; nextln:                 DW_CFA_restore_state

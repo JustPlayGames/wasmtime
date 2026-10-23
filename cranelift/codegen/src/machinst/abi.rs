@@ -546,6 +546,15 @@ pub trait ABIMachineSpec {
         frame_layout: &FrameLayout,
     ) -> SmallInstVec<Self::I>;
 
+    /// Generate what follows a return instruction in an epilogue (unwind
+    /// information for the code after it).
+    fn gen_after_return(
+        _flags: &settings::Flags,
+        _frame_layout: &FrameLayout,
+    ) -> SmallInstVec<Self::I> {
+        SmallVec::new()
+    }
+
     /// Generate a return instruction.
     fn gen_return(
         call_conv: isa::CallConv,
@@ -2493,6 +2502,7 @@ impl<M: ABIMachineSpec> Callee<M> {
             &self.isa_flags,
             &frame_layout,
         ));
+        insts.extend(M::gen_after_return(&self.flags, &frame_layout));
 
         trace!("Epilogue: {:?}", insts);
         insts

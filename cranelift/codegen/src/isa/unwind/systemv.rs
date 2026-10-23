@@ -238,6 +238,13 @@ pub(crate) fn create_unwind_info_from_insts<MR: RegisterMapper<Reg>>(
                 cfa_offset = offset_upward_to_caller_sp;
                 clobber_offset_to_cfa = offset_upward_to_caller_sp - offset_upward_to_clobbers;
             }
+            &UnwindInst::FramelessFrameFreed => {
+                instructions.push((instruction_offset, CallFrameInstruction::RememberState));
+                instructions.push((instruction_offset, CallFrameInstruction::CfaOffset(8)));
+            }
+            &UnwindInst::FramelessReturned => {
+                instructions.push((instruction_offset, CallFrameInstruction::RestoreState));
+            }
             &UnwindInst::StackAlloc { size } => {
                 // If we do not use a frame pointer, we need to update the
                 // CFA offset whenever the stack pointer changes.

@@ -300,7 +300,9 @@ pub(crate) fn create_unwind_info_from_insts(
                     }
                 }
             }
-            &UnwindInst::DefineFramelessFrame { .. } => {
+            &UnwindInst::DefineFramelessFrame { .. }
+            | &UnwindInst::FramelessFrameFreed
+            | &UnwindInst::FramelessReturned => {
                 unreachable!("frames without a frame pointer are only used on x64");
             }
             &UnwindInst::RegStackOffset { .. } => {

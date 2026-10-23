@@ -24,6 +24,13 @@ pub(crate) type X64Callee = Callee<X64ABIMachineSpec>;
 pub struct X64ABIMachineSpec;
 
 impl X64ABIMachineSpec {
+    /// What the prologue subtracts from RSP for clobbers and the fixed frame.
+    fn frameless_stack_size(frame_layout: &FrameLayout) -> u32 {
+        frame_layout.fixed_frame_storage_size
+            + frame_layout.clobber_size
+            + frame_layout.outgoing_args_size
+    }
+
     fn gen_probestack_unroll(
         insts: &mut SmallInstVec<Inst>,
         guard_size: u32,
@@ -863,9 +870,25 @@ impl ABIMachineSpec for X64ABIMachineSpec {
         insts
     }
 
+    fn gen_after_return(
+        flags: &settings::Flags,
+        frame_layout: &FrameLayout,
+    ) -> SmallInstVec<Self::I> {
+        let mut insts = SmallVec::new();
+        if flags.unwind_info()
+            && frame_layout.frameless
+            && Self::frameless_stack_size(frame_layout) > 0
+        {
+            insts.push(Inst::Unwind {
+                inst: UnwindInst::FramelessReturned,
+            });
+        }
+        insts
+    }
+
     fn gen_clobber_restore(
         _call_conv: isa::CallConv,
-        _flags: &settings::Flags,
+        flags: &settings::Flags,
         frame_layout: &FrameLayout,
     ) -> SmallVec<[Self::I; 16]> {
         let mut insts = SmallVec::new();
@@ -906,6 +929,14 @@ impl ABIMachineSpec for X64ABIMachineSpec {
             let stack_size = i32::try_from(stack_size)
                 .expect("`stack_size` is too large to fit in a 32-bit immediate");
             insts.push(Inst::addq_mi(rsp, stack_size));
+
+            // Without a frame pointer, the CFA is found from RSP, which now
+            // points at the return address.
+            if flags.unwind_info() && frame_layout.frameless {
+                insts.push(Inst::Unwind {
+                    inst: UnwindInst::FramelessFrameFreed,
+                });
+            }
         }
 
         insts

@@ -316,7 +316,9 @@ pub(crate) fn create_unwind_info_from_insts<MR: RegisterMapper<crate::machinst::
                     });
                 }
             },
-            &UnwindInst::DefineFramelessFrame { .. } => {
+            &UnwindInst::DefineFramelessFrame { .. }
+            | &UnwindInst::FramelessFrameFreed
+            | &UnwindInst::FramelessReturned => {
                 unreachable!("frames without a frame pointer are only used with DWARF");
             }
             &UnwindInst::RegStackOffset { .. } => {

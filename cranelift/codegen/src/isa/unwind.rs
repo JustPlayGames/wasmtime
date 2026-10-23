@@ -191,6 +191,13 @@ pub enum UnwindInst {
         /// area.
         offset_upward_to_clobbers: u32,
     },
+    /// An epilogue of a frame without a frame pointer has just freed the
+    /// frame: SP points at the return address again, until the return. Code
+    /// after the return is back in the frame (see `FramelessReturned`).
+    FramelessFrameFreed,
+    /// The return that ended a `FramelessFrameFreed` epilogue: the code that
+    /// follows runs in the frame as it was before that epilogue.
+    FramelessReturned,
     /// The stack pointer was adjusted to allocate the stack.
     StackAlloc {
         /// Size to allocate.
