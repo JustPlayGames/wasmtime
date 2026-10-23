@@ -223,6 +223,19 @@ pub fn do_remove_constant_phis(func: &mut Function, domtree: &mut DominatorTree)
     let _tt = timing::remove_constant_phis();
     debug_assert!(domtree.is_valid());
 
+    // Only the formals of blocks other than the entry block can be
+    // removed. Without any, there is nothing to do: skip the analysis.
+    let entry_block = func
+        .layout
+        .entry_block()
+        .expect("remove_constant_phis: entry block unknown");
+    if domtree
+        .cfg_rpo()
+        .all(|&b| b == entry_block || func.dfg.num_block_params(b) == 0)
+    {
+        return;
+    }
+
     // Phase 1 of 3: for each block, make a summary containing all relevant
     // info.  The solver will iterate over the summaries, rather than having
     // to inspect each instruction in each block.
@@ -235,7 +248,8 @@ pub fn do_remove_constant_phis(func: &mut Function, domtree: &mut DominatorTree)
         let formals = func.dfg.block_params(b);
         let mut summary = BlockSummary::new(&bump, formals);
 
-        for inst in func.layout.block_insts(b) {
+        // Only a block's terminator, its last instruction, branches.
+        if let Some(inst) = func.layout.last_inst(b) {
             for (ix, dest) in func.dfg.insts[inst]
                 .branch_destination(&func.dfg.jump_tables, &func.dfg.exception_tables)
                 .iter()
@@ -258,11 +272,6 @@ pub fn do_remove_constant_phis(func: &mut Function, domtree: &mut DominatorTree)
     // Phase 2 of 3: iterate over the summaries in reverse postorder,
     // computing new `AbstractValue`s for each tracked `Value`.  The set of
     // tracked `Value`s is exactly Group A as described above.
-
-    let entry_block = func
-        .layout
-        .entry_block()
-        .expect("remove_constant_phis: entry block unknown");
 
     // Set up initial solver state
     let mut state = SolverState::new();
