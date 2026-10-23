@@ -941,6 +941,7 @@ dependencies = [
  "cranelift-codegen",
  "cranelift-control",
  "hashbrown 0.17.0",
+ "rustc-hash",
  "serde",
  "serde_derive",
 ]

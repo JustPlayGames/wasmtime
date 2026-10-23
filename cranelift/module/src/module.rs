@@ -482,7 +482,9 @@ pub struct ModuleDeclarations {
     // attempting to deserialize other fields that are potentially changed between versions.
     _version_marker: VersionMarker,
 
-    names: HashMap<String, FuncOrDataId>,
+    // Symbol names are long (mangled); FxHash is much cheaper on them than SipHash, and the
+    // names come from the compiler, not from an adversary.
+    names: HashMap<String, FuncOrDataId, rustc_hash::FxBuildHasher>,
     functions: PrimaryMap<FuncId, FunctionDeclaration>,
     data_objects: PrimaryMap<DataId, DataDeclaration>,
 }
@@ -501,8 +503,8 @@ mod serialize {
     fn get_names<E: Error>(
         functions: &PrimaryMap<FuncId, FunctionDeclaration>,
         data_objects: &PrimaryMap<DataId, DataDeclaration>,
-    ) -> Result<HashMap<String, FuncOrDataId>, E> {
-        let mut names = HashMap::new();
+    ) -> Result<HashMap<String, FuncOrDataId, rustc_hash::FxBuildHasher>, E> {
+        let mut names = HashMap::default();
         for (func_id, decl) in functions.iter() {
             if let Some(name) = &decl.name {
                 let old = names.insert(name.clone(), FuncOrDataId::Func(func_id));
