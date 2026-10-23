@@ -7,8 +7,8 @@ use cranelift_codegen::ir;
 use cranelift_codegen::isa::{OwnedTargetIsa, TargetIsa};
 use cranelift_control::ControlPlane;
 use cranelift_module::{
-    DataDescription, DataId, FuncId, Init, Linkage, Module, ModuleDeclarations, ModuleError,
-    ModuleReloc, ModuleRelocTarget, ModuleResult,
+    DataDescription, DataId, FuncId, FuncOrDataId, Init, Linkage, Module, ModuleDeclarations,
+    ModuleError, ModuleReloc, ModuleRelocTarget, ModuleResult,
 };
 use log::{info, warn};
 use object::write::{
@@ -337,16 +337,20 @@ impl Module for ObjectModule {
             symbol.scope = scope;
             symbol.weak = weak;
         } else {
-            let symbol_id = self.object.add_symbol(Symbol {
-                name: name.as_bytes().to_vec(),
-                value: 0,
-                size: 0,
-                kind: SymbolKind::Text,
-                scope,
-                weak,
-                section: SymbolSection::Undefined,
-                flags: SymbolFlags::None,
-            });
+            let symbol_id = add_named_symbol(
+                &mut self.object,
+                name,
+                Symbol {
+                    name: vec![],
+                    value: 0,
+                    size: 0,
+                    kind: SymbolKind::Text,
+                    scope,
+                    weak,
+                    section: SymbolSection::Undefined,
+                    flags: SymbolFlags::None,
+                },
+            );
             self.functions[id] = Some((symbol_id, false));
         }
 
@@ -404,16 +408,20 @@ impl Module for ObjectModule {
             symbol.scope = scope;
             symbol.weak = weak;
         } else {
-            let symbol_id = self.object.add_symbol(Symbol {
-                name: name.as_bytes().to_vec(),
-                value: 0,
-                size: 0,
-                kind,
-                scope,
-                weak,
-                section: SymbolSection::Undefined,
-                flags: SymbolFlags::None,
-            });
+            let symbol_id = add_named_symbol(
+                &mut self.object,
+                name,
+                Symbol {
+                    name: vec![],
+                    value: 0,
+                    size: 0,
+                    kind,
+                    scope,
+                    weak,
+                    section: SymbolSection::Undefined,
+                    flags: SymbolFlags::None,
+                },
+            );
             self.data_objects[id] = Some((symbol_id, false));
         }
 
@@ -927,7 +935,16 @@ impl ObjectModule {
             }
             ModuleRelocTarget::LibCall(ref libcall) => {
                 let name = (self.libcall_names)(*libcall);
-                if let Some(symbol) = self.object.symbol_id(name.as_bytes()) {
+                // Declared functions and data aren't in `object`'s name map (see
+                // `add_named_symbol`): find them through the declarations.
+                let declared = match self.declarations.get_name(&name) {
+                    Some(FuncOrDataId::Func(id)) => self.functions[id].map(|(symbol, _)| symbol),
+                    Some(FuncOrDataId::Data(id)) => self.data_objects[id].map(|(symbol, _)| symbol),
+                    None => None,
+                };
+                if let Some(symbol) = declared {
+                    symbol
+                } else if let Some(symbol) = self.object.symbol_id(name.as_bytes()) {
                     symbol
                 } else if let Some(symbol) = self.libcalls.get(libcall) {
                     *symbol
@@ -1605,4 +1622,19 @@ mod tests {
             parse_section("foo,bar,regular,no_dead_strip,unknown", BinaryFormat::MachO).is_err()
         );
     }
+}
+
+/// Adds a declared function's or data object's symbol named `name`, without entering it in
+/// `object`'s own name map, which hashes and copies every name and is only read for libcalls
+/// (`ObjectModule::get_symbol` looks those up through the declarations first). The symbol is
+/// the same as `object.add_symbol` makes, global prefix included.
+fn add_named_symbol(object: &mut Object, name: &str, symbol: Symbol) -> SymbolId {
+    debug_assert!(symbol.name.is_empty());
+    let symbol_id = object.add_symbol(symbol);
+    let mut name = name.as_bytes().to_vec();
+    if let Some(prefix) = object.mangling().global_prefix() {
+        name.insert(0, prefix);
+    }
+    object.symbol_mut(symbol_id).name = name;
+    symbol_id
 }
