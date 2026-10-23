@@ -1,6 +1,6 @@
 use cranelift_codegen::ir::*;
 use cranelift_codegen::isa::CallConv;
-use cranelift_codegen::settings;
+use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::{Context, ir::types::I16};
 use cranelift_entity::EntityRef;
 use cranelift_frontend::*;
@@ -663,4 +663,89 @@ mod eh_frame {
             "no .eh_frame should be emitted for Windows targets"
         );
     }
+}
+
+#[test]
+fn x86_64_elf_pic_symbol_address_relocations() {
+    use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+
+    // Under `is_pic`, symbols are addressed through GOT loads the linker may relax
+    // (`R_X86_64_REX_GOTPCRELX`), whether they are defined in the module or imported.
+    let mut flag_builder = settings::builder();
+    flag_builder.set("is_pic", "true").unwrap();
+    let isa = cranelift_codegen::isa::lookup_by_name("x86_64-unknown-linux-gnu")
+        .unwrap()
+        .finish(settings::Flags::new(flag_builder))
+        .unwrap();
+    let mut module =
+        ObjectModule::new(ObjectBuilder::new(isa, "test", default_libcall_names()).unwrap());
+
+    let local_id = module
+        .declare_data("local_data", Linkage::Local, true, false)
+        .unwrap();
+    let mut data_desc = DataDescription::new();
+    data_desc.define_zeroinit(8);
+    module.define_data(local_id, &data_desc).unwrap();
+    let import_id = module
+        .declare_data("imported_data", Linkage::Import, true, false)
+        .unwrap();
+
+    let sig = Signature {
+        params: vec![],
+        returns: vec![AbiParam::new(types::I64)],
+        call_conv: module.target_config().default_call_conv,
+    };
+    let func_id = module
+        .declare_function("addresses", Linkage::Local, &sig)
+        .unwrap();
+    let mut ctx = Context::new();
+    ctx.func = Function::with_name_signature(UserFuncName::user(0, func_id.as_u32()), sig);
+    let mut func_ctx = FunctionBuilderContext::new();
+    {
+        let mut bcx = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
+        let block = bcx.create_block();
+        bcx.switch_to_block(block);
+        let pointer_type = module.target_config().pointer_type();
+        let local = module.declare_data_in_func(local_id, &mut bcx.func);
+        let local = bcx.ins().symbol_value(pointer_type, local);
+        let import = module.declare_data_in_func(import_id, &mut bcx.func);
+        let import = bcx.ins().symbol_value(pointer_type, import);
+        let sum = bcx.ins().iadd(local, import);
+        bcx.ins().return_(&[sum]);
+        bcx.seal_all_blocks();
+        bcx.finalize(module.target_config());
+    }
+    module.define_function(func_id, &mut ctx).unwrap();
+
+    let bytes = module.finish().emit().expect("emit object file");
+    let file = object::File::parse(&*bytes).expect("parse emitted object");
+    let symbol = |name: &str| {
+        file.symbols()
+            .find(|symbol| symbol.name() == Ok(name))
+            .unwrap_or_else(|| panic!("symbol {name} present in object"))
+    };
+    let function = symbol("addresses");
+    let section = file
+        .section_by_index(function.section_index().unwrap())
+        .expect("function section present");
+    let r_type = |target: object::SymbolIndex| {
+        let (_, relocation) = section
+            .relocations()
+            .find(|(_, relocation)| {
+                relocation.target() == object::read::RelocationTarget::Symbol(target)
+            })
+            .expect("relocation present");
+        match relocation.flags() {
+            object::RelocationFlags::Elf { r_type } => r_type,
+            flags => panic!("unexpected relocation flags {flags:?}"),
+        }
+    };
+    assert_eq!(
+        r_type(symbol("local_data").index()),
+        object::elf::R_X86_64_REX_GOTPCRELX
+    );
+    assert_eq!(
+        r_type(symbol("imported_data").index()),
+        object::elf::R_X86_64_REX_GOTPCRELX
+    );
 }
