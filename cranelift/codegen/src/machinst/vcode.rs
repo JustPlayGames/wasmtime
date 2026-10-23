@@ -1068,7 +1068,7 @@ impl<I: VCodeInst> VCode<I> {
                             {
                                 do_emit(&I::gen_nop(1), &mut disasm, &mut buffer, &mut state);
                             }
-                            log::trace!("emitting epilogue");
+                            trace!("emitting epilogue");
                             for inst in self.abi.gen_epilogue() {
                                 do_emit(&inst, &mut disasm, &mut buffer, &mut state);
                             }
@@ -1095,7 +1095,7 @@ impl<I: VCodeInst> VCode<I> {
                             );
                             debug_assert!(allocs.next().is_none());
 
-                            log::trace!("emitting: {:?}", self.insts[iix.index()]);
+                            trace!("emitting: {:?}", self.insts[iix.index()]);
 
                             // Emit the instruction!
                             emit_inst(
