@@ -126,6 +126,11 @@ pub struct VCode<I: VCodeInst> {
     /// Clobbers: a sparse map from instruction indices to clobber masks.
     clobbers: FxHashMap<InsnIndex, PRegSet>,
 
+    /// One bit per instruction: set when `clobbers` has an entry for it.
+    /// Most instructions clobber nothing, and a bit test is cheaper than
+    /// a lookup.
+    clobbered_insts: Vec<u64>,
+
     /// Source locations for each instruction. (`SourceLoc` is a `u32`, so it is
     /// reasonable to keep one of these per instruction.)
     srclocs: Vec<RelSourceLoc>,
@@ -512,6 +517,9 @@ impl<I: VCodeInst> VCodeBuilder<I> {
 
     fn collect_operands(&mut self, vregs: &VRegAllocator<I>) {
         let allocatable = PRegSet::from(self.vcode.abi.machine_env());
+        self.vcode
+            .clobbered_insts
+            .resize(self.vcode.insts.len().div_ceil(64), 0);
         for (i, insn) in self.vcode.insts.iter_mut().enumerate() {
             // Push operands from the instruction onto the operand list.
             //
@@ -534,6 +542,7 @@ impl<I: VCodeInst> VCodeBuilder<I> {
 
             if clobbers != PRegSet::default() {
                 self.vcode.clobbers.insert(InsnIndex::new(i), clobbers);
+                self.vcode.clobbered_insts[i / 64] |= 1 << (i % 64);
             }
 
             if let Some((dst, src)) = insn.is_move() {
@@ -665,6 +674,7 @@ impl<I: VCodeInst> VCode<I> {
             operands: Vec::with_capacity(30 * n_blocks),
             operand_ranges: Ranges::with_capacity(10 * n_blocks),
             clobbers: FxHashMap::default(),
+            clobbered_insts: vec![],
             srclocs: Vec::with_capacity(10 * n_blocks),
             entry: BlockIndex::new(0),
             block_ranges: Ranges::with_capacity(n_blocks),
@@ -695,6 +705,15 @@ impl<I: VCodeInst> VCode<I> {
     /// The number of lowered instructions.
     pub fn num_insts(&self) -> usize {
         self.insts.len()
+    }
+
+    /// Whether `clobbers` has an entry for `insn`.
+    #[inline]
+    fn has_clobbers(&self, insn: InsnIndex) -> bool {
+        let i = insn.index();
+        self.clobbered_insts
+            .get(i / 64)
+            .is_some_and(|word| word & (1 << (i % 64)) != 0)
     }
 
     fn compute_clobbers_and_function_calls(
@@ -743,7 +762,7 @@ impl<I: VCodeInst> VCode<I> {
             // actual half-clobber implied by the clobber list fits
             // within the clobbers that we allow without
             // clobber-saves).
-            if self.insts[i].is_included_in_clobbers() {
+            if self.insts[i].is_included_in_clobbers() && self.has_clobbers(InsnIndex::new(i)) {
                 if let Some(&inst_clobbered) = self.clobbers.get(&InsnIndex::new(i)) {
                     clobbered.union_from(inst_clobbered);
                 }
@@ -1646,6 +1665,9 @@ impl<I: VCodeInst> RegallocFunction for VCode<I> {
     }
 
     fn inst_clobbers(&self, insn: InsnIndex) -> PRegSet {
+        if !self.has_clobbers(insn) {
+            return PRegSet::default();
+        }
         self.clobbers.get(&insn).cloned().unwrap_or_default()
     }
 
