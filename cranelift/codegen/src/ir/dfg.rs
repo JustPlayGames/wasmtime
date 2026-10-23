@@ -445,12 +445,14 @@ impl DataFlowGraph {
         // into an alias directly to the final value. Due to updating every
         // alias that it looks at, this loop runs in time linear in the number
         // of values.
+        let mut any_alias = false;
         for mut src in self.values.keys() {
             let value_data = self.values[src];
             if value_data == invalid_value {
                 continue;
             }
             if let ValueData::Alias { mut original, .. } = value_data.into() {
+                any_alias = true;
                 // We don't use the type after this, we just need some place to
                 // store the resolved aliases temporarily.
                 let resolved = ValueDataPacked::from(ValueData::Alias {
@@ -470,6 +472,12 @@ impl DataFlowGraph {
                     }
                 }
             }
+        }
+
+        // Without aliases, no use or label needs rewriting and none is left
+        // to delete.
+        if !any_alias {
+            return;
         }
 
         // Now aliases don't point to other aliases, so we can replace any use
