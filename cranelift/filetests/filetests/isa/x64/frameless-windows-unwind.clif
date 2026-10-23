@@ -96,5 +96,5 @@ block0(v0: i64, v1: i64, v2: i64, v3: i64, v4: i64):
 ; nextln:                  info: 0
 ; check:                offset: 13
 ; nextln:                    op: SaveNonvolatileRegister
-; nextln:                  info: 6
+; nextln:                  info: 3
 ; nextln:                 value: 0 (u16)

@@ -46,14 +46,12 @@ block0(v0: i8):
 ; VCode:
 ;   pushq %rbp
 ;   movq %rsp, %rbp
-;   subq $0x30, %rsp
-;   movq %rsi, 0x20(%rsp)
+;   subq $0x20, %rsp
 ; block0:
 ;   movzbq %cl, %rcx
-;   load_ext_name userextname0+0, %rsi
-;   call    *%rsi
-;   movq 0x20(%rsp), %rsi
-;   addq $0x30, %rsp
+;   load_ext_name userextname0+0, %r8
+;   call    *%r8
+;   addq $0x20, %rsp
 ;   movq %rbp, %rsp
 ;   popq %rbp
 ;   retq
@@ -62,14 +60,12 @@ block0(v0: i8):
 ; block0: ; offset 0x0
 ;   pushq %rbp
 ;   movq %rsp, %rbp
-;   subq $0x30, %rsp
-;   movq %rsi, 0x20(%rsp)
-; block1: ; offset 0xd
+;   subq $0x20, %rsp
+; block1: ; offset 0x8
 ;   movzbq %cl, %rcx
-;   movabsq $0, %rsi ; reloc_external Abs8 u0:0 0
-;   callq *%rsi
-;   movq 0x20(%rsp), %rsi
-;   addq $0x30, %rsp
+;   movabsq $0, %r8 ; reloc_external Abs8 u0:0 0
+;   callq *%r8
+;   addq $0x20, %rsp
 ;   movq %rbp, %rsp
 ;   popq %rbp
 ;   retq

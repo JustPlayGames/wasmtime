@@ -67,7 +67,8 @@ block0(v0: i64, v1: i64):
 ; nextln:                  info: 6
 ; nextln:                 value: 3 (u16)
 
-; Three GPRs saved (32-byte clobber area).
+; Two GPRs saved (16-byte clobber area): the two values live across the call. RSI
+; and RDI are callee-saved in this ABI, so nothing else uses them.
 function %small(i64, i64) -> i64 windows_fastcall {
     fn0 = %g() windows_fastcall
 block0(v0: i64, v1: i64):
@@ -78,16 +79,16 @@ block0(v0: i64, v1: i64):
 
 ; sameln:               version: 1
 ; nextln:                 flags: 0
-; nextln:         prologue size: 23
+; nextln:         prologue size: 18
 ; nextln:        frame register: 5
-; nextln: frame register offset: 2
-; nextln:          unwind codes: 6
+; nextln: frame register offset: 1
+; nextln:          unwind codes: 5
 ; check:                offset: 1
 ; nextln:                    op: PushNonvolatileRegister
 ; nextln:                  info: 5
 ; check:                offset: 4
 ; nextln:                    op: SmallStackAlloc
-; nextln:                  info: 3
+; nextln:                  info: 1
 ; check:                offset: 4
 ; nextln:                    op: SetFramePointer
 ; nextln:                  info: 0
@@ -99,10 +100,6 @@ block0(v0: i64, v1: i64):
 ; nextln:                    op: SaveNonvolatileRegister
 ; nextln:                  info: 7
 ; nextln:                 value: 1 (u16)
-; check:                offset: 23
-; nextln:                    op: SaveNonvolatileRegister
-; nextln:                  info: 12
-; nextln:                 value: 2 (u16)
 
 ; Every windows_fastcall callee-saved register: 7 GPRs and 10 XMM
 ; registers (224-byte clobber area, frame register offset 14).
