@@ -17,6 +17,7 @@ workspace = true
 cranelift-codegen = { workspace = true }
 cranelift-control = { workspace = true }
 hashbrown = { workspace = true }
+rustc-hash = { workspace = true }
 anyhow = { workspace = true, features = ['std'] }
 serde = { workspace = true, optional = true }
 serde_derive = { workspace = true, optional = true }
