@@ -862,8 +862,10 @@ impl ObjectModule {
     ) -> SectionId {
         let section = self.object.add_section(Vec::new(), name.to_vec(), kind);
         self.object.section_symbol(section);
+        // Named after adding, as `add_named_symbol` does: kept out of `object`'s name map, where
+        // it would replace the function's or data object's own symbol of the same name.
         let leader = self.object.add_symbol(Symbol {
-            name: leader_name,
+            name: Vec::new(),
             value: 0,
             size: 0,
             kind: if kind == SectionKind::Text {
@@ -876,6 +878,11 @@ impl ObjectModule {
             section: SymbolSection::Section(section),
             flags: SymbolFlags::None,
         });
+        let mut leader_name = leader_name;
+        if let Some(prefix) = self.object.mangling().global_prefix() {
+            leader_name.insert(0, prefix);
+        }
+        self.object.symbol_mut(leader).name = leader_name;
         let comdat = self.object.add_comdat(Comdat {
             kind: ComdatKind::NoDuplicates,
             symbol: leader,
